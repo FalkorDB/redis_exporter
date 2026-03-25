@@ -27,7 +27,7 @@ func TestKeyValuesAndSizes(t *testing.T) {
 		Options{
 			Namespace:       "test",
 			CheckSingleKeys: dbNumStrFull + "=" + url.QueryEscape(testKeys[0]),
-			Registry:        prometheus.NewRegistry()},
+		},
 	)
 	ts := httptest.NewServer(e)
 	defer ts.Close()
@@ -58,7 +58,7 @@ func TestKeyValuesAsLabel(t *testing.T) {
 				Namespace:                 "test",
 				CheckSingleKeys:           dbNumStrFull + "=" + url.QueryEscape(TestKeyNameSingleString),
 				DisableExportingKeyValues: exc,
-				Registry:                  prometheus.NewRegistry()},
+			},
 		)
 		ts := httptest.NewServer(e)
 
@@ -274,16 +274,16 @@ func TestParseKeyArg(t *testing.T) {
 type keyFixture struct {
 	command string
 	key     string
-	args    []interface{}
+	args    []any
 }
 
-func newKeyFixture(command string, key string, args ...interface{}) keyFixture {
+func newKeyFixture(command string, key string, args ...any) keyFixture {
 	return keyFixture{command, key, args}
 }
 
 func createKeyFixtures(t *testing.T, c redis.Conn, fixtures []keyFixture) {
 	for _, f := range fixtures {
-		args := append([]interface{}{f.key}, f.args...)
+		args := append([]any{f.key}, f.args...)
 		if _, err := c.Do(f.command, args...); err != nil {
 			t.Fatalf("Error creating fixture: %#v, %#v", f, err)
 		}
@@ -303,13 +303,13 @@ func TestScanKeys(t *testing.T) {
 	var fixtures []keyFixture
 
 	// Make 1000 keys that match
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		key := fmt.Sprintf("get_keys_test_shouldmatch_%v", i)
 		fixtures = append(fixtures, newKeyFixture("SET", key, "Woohoo!"))
 	}
 
 	// And 1000 that don't
-	for i := 0; i < numKeys; i++ {
+	for i := range numKeys {
 		key := fmt.Sprintf("get_keys_test_shouldnotmatch_%v", i)
 		fixtures = append(fixtures, newKeyFixture("SET", key, "Rats!"))
 	}
@@ -639,7 +639,7 @@ func TestCheckKeys(t *testing.T) {
 
 func TestCheckSingleKeyDefaultsTo0(t *testing.T) {
 	uri := os.Getenv("TEST_REDIS_URI")
-	e, _ := NewRedisExporter(uri, Options{Namespace: "test", CheckSingleKeys: "single", Registry: prometheus.NewRegistry()})
+	e, _ := NewRedisExporter(uri, Options{Namespace: "test", CheckSingleKeys: "single"})
 	ts := httptest.NewServer(e)
 	defer ts.Close()
 
@@ -664,7 +664,6 @@ func TestCheckKeysMultipleDBs(t *testing.T) {
 				anotherAltDbNumStr + "=" + testKeys[0],
 			CheckKeys:          dbNumStr + "=" + "test*",
 			CheckKeysBatchSize: 1000,
-			Registry:           prometheus.NewRegistry(),
 		})
 	ts := httptest.NewServer(e)
 	defer ts.Close()
@@ -708,7 +707,6 @@ func TestClusterGetKeyInfo(t *testing.T) {
 		Options{
 			Namespace:       "test",
 			CheckSingleKeys: strings.Join(AllTestKeys, ","),
-			Registry:        prometheus.NewRegistry(),
 			IsCluster:       true,
 		},
 	)
@@ -755,7 +753,6 @@ func TestGetKeyInfoWithMissingKey(t *testing.T) {
 		Options{
 			Namespace:       "test",
 			CheckSingleKeys: strings.Join(keys, ","),
-			Registry:        prometheus.NewRegistry(),
 		},
 	)
 	ts := httptest.NewServer(e)
@@ -793,11 +790,11 @@ func TestGetKeysCount(t *testing.T) {
 	}
 
 	fixtures := []keyFixture{
-		{"SET", "count_test:keys_count_test_string1", []interface{}{"Woohoo!"}},
-		{"SET", "count_test:keys_count_test_string2", []interface{}{"!oohooW"}},
-		{"LPUSH", "count_test:keys_count_test_list1", []interface{}{"listval1", "listval2", "listval3"}},
-		{"LPUSH", "count_test:keys_count_test_list2", []interface{}{"listval1", "listval2", "listval3"}},
-		{"LPUSH", "count_test:keys_count_test_list3", []interface{}{"listval1", "listval2", "listval3"}},
+		{"SET", "count_test:keys_count_test_string1", []any{"Woohoo!"}},
+		{"SET", "count_test:keys_count_test_string2", []any{"!oohooW"}},
+		{"LPUSH", "count_test:keys_count_test_list1", []any{"listval1", "listval2", "listval3"}},
+		{"LPUSH", "count_test:keys_count_test_list2", []any{"listval1", "listval2", "listval3"}},
+		{"LPUSH", "count_test:keys_count_test_list3", []any{"listval1", "listval2", "listval3"}},
 	}
 
 	createKeyFixtures(t, c, fixtures)

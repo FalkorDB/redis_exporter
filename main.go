@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/FalkorDB/redis_exporter/exporter"
 )
@@ -56,6 +57,102 @@ func getEnvInt64(key string, defaultVal int64) int64 {
 	return defaultVal
 }
 
+// parseLogLevel parses a log level string and returns the corresponding logrus level
+func parseLogLevel(level string) (log.Level, error) {
+	switch strings.ToUpper(level) {
+	case "DEBUG":
+		return log.DebugLevel, nil
+	case "INFO":
+		return log.InfoLevel, nil
+	case "WARN", "WARNING":
+		return log.WarnLevel, nil
+	case "ERROR":
+		return log.ErrorLevel, nil
+	default:
+		return log.InfoLevel, errors.New("invalid log level: " + level)
+	}
+}
+
+// validateTLSClientConfig validates TLS client configuration
+func validateTLSClientConfig(certFile, keyFile string) error {
+	if (certFile != "") != (keyFile != "") {
+		return errors.New("TLS client key file and cert file should both be present")
+	}
+	return nil
+}
+
+func validateAuthParams(basicAuthPassword, basicAuthHashPassword string) error {
+	if basicAuthPassword != "" && basicAuthHashPassword != "" {
+		return errors.New("cannot set both basic auth password and basic auth hash password")
+	}
+	if basicAuthHashPassword != "" {
+		_, err := bcrypt.Cost([]byte(basicAuthHashPassword))
+		return err
+	}
+	return nil
+}
+
+// loadScripts loads Lua scripts from the provided script paths
+func loadScripts(scriptPath string) (map[string][]byte, error) {
+	if scriptPath == "" {
+		return nil, nil
+	}
+
+	scripts := strings.Split(scriptPath, ",")
+	ls := make(map[string][]byte, len(scripts))
+
+	for _, script := range scripts {
+		scriptContent, err := os.ReadFile(script)
+		if err != nil {
+			return nil, err
+		}
+		ls[script] = scriptContent
+	}
+
+	return ls, nil
+}
+
+// setupLogging configures logging based on the provided parameters
+func setupLogging(isDebug bool, logLevel, logFormat string) error {
+	switch logFormat {
+	case "json":
+		log.SetFormatter(&log.JSONFormatter{})
+	default:
+		log.SetFormatter(&log.TextFormatter{})
+	}
+
+	lvl := log.InfoLevel
+	if isDebug {
+		lvl = log.DebugLevel
+	} else {
+		parsedLvl, err := parseLogLevel(logLevel)
+		if err == nil {
+			lvl = parsedLvl
+		}
+	}
+
+	log.SetLevel(lvl)
+	return nil
+}
+
+// createPrometheusRegistry creates and configures a Prometheus registry
+func createPrometheusRegistry(redisMetricsOnly, inclGoRuntimeMetrics bool) *prometheus.Registry {
+	registry := prometheus.NewRegistry()
+	if !redisMetricsOnly {
+		registry.MustRegister(
+			// expose process metrics like CPU, Memory, file descriptor usage etc.
+			collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		)
+		if inclGoRuntimeMetrics {
+			registry.MustRegister(
+				// expose all Go runtime metrics like GC stats, memory stats etc.
+				collectors.NewGoCollector(collectors.WithGoCollectorRuntimeMetrics(collectors.MetricsAll)),
+			)
+		}
+	}
+	return registry
+}
+
 func main() {
 	var (
 		redisAddr                      = flag.String("redis.addr", getEnv("REDIS_ADDR", "redis://localhost:6379"), "Address of the Redis instance to scrape")
@@ -72,9 +169,9 @@ func main() {
 		countKeys                      = flag.String("count-keys", getEnv("REDIS_EXPORTER_COUNT_KEYS", ""), "Comma separated list of patterns to count (eg: 'db0=production_*,db3=sessions:*'), searched for with SCAN")
 		checkKeysBatchSize             = flag.Int64("check-keys-batch-size", getEnvInt64("REDIS_EXPORTER_CHECK_KEYS_BATCH_SIZE", 1000), "Approximate number of keys to process in each execution, larger value speeds up scanning.\nWARNING: Still Redis is a single-threaded app, huge COUNT can affect production environment.")
 		scriptPath                     = flag.String("script", getEnv("REDIS_EXPORTER_SCRIPT", ""), "Comma separated list of path(s) to Redis Lua script(s) for gathering extra metrics")
+		luaScriptReadOnly              = flag.Bool("lua-script-read-only", getEnvBool("REDIS_EXPORTER_LUA_SCRIPT_READ_ONLY", false), "Use EVAL_RO command for gathering extra metrics with Lua script")
 		listenAddress                  = flag.String("web.listen-address", getEnv("REDIS_EXPORTER_WEB_LISTEN_ADDRESS", ":9121"), "Address to listen on for web interface and telemetry.")
 		metricPath                     = flag.String("web.telemetry-path", getEnv("REDIS_EXPORTER_WEB_TELEMETRY_PATH", "/metrics"), "Path under which to expose metrics.")
-		logFormat                      = flag.String("log-format", getEnv("REDIS_EXPORTER_LOG_FORMAT", "txt"), "Log format, valid options are txt and json")
 		configCommand                  = flag.String("config-command", getEnv("REDIS_EXPORTER_CONFIG_COMMAND", "CONFIG"), "What to use for the CONFIG command, set to \"-\" to skip config metrics extraction")
 		connectionTimeout              = flag.String("connection-timeout", getEnv("REDIS_EXPORTER_CONNECTION_TIMEOUT", "15s"), "Timeout for connection to Redis instance")
 		tlsClientKeyFile               = flag.String("tls-client-key-file", getEnv("REDIS_EXPORTER_TLS_CLIENT_KEY_FILE", ""), "Name of the client key file (including full path) if the server requires TLS client authentication")
@@ -85,19 +182,25 @@ func main() {
 		tlsServerCaCertFile            = flag.String("tls-server-ca-cert-file", getEnv("REDIS_EXPORTER_TLS_SERVER_CA_CERT_FILE", ""), "Name of the CA certificate file (including full path) if the web interface and telemetry should require TLS client authentication")
 		tlsServerMinVersion            = flag.String("tls-server-min-version", getEnv("REDIS_EXPORTER_TLS_SERVER_MIN_VERSION", "TLS1.2"), "Minimum TLS version that is acceptable by the web interface and telemetry when using TLS")
 		maxDistinctKeyGroups           = flag.Int64("max-distinct-key-groups", getEnvInt64("REDIS_EXPORTER_MAX_DISTINCT_KEY_GROUPS", 100), "The maximum number of distinct key groups with the most memory utilization to present as distinct metrics per database, the leftover key groups will be aggregated in the 'overflow' bucket")
-		isDebug                        = flag.Bool("debug", getEnvBool("REDIS_EXPORTER_DEBUG", false), "Output verbose debug information")
+		isDebug                        = flag.Bool("debug", getEnvBool("REDIS_EXPORTER_DEBUG", false), "Output verbose debug information (sets log level to DEBUG, takes precedence over \"--log-level\")")
+		logLevel                       = flag.String("log-level", getEnv("REDIS_EXPORTER_LOG_LEVEL", "INFO"), "Set log level")
+		logFormat                      = flag.String("log-format", getEnv("REDIS_EXPORTER_LOG_FORMAT", "txt"), "Log format, valid options are txt and json")
 		setClientName                  = flag.Bool("set-client-name", getEnvBool("REDIS_EXPORTER_SET_CLIENT_NAME", true), "Whether to set client name to redis_exporter")
 		isTile38                       = flag.Bool("is-tile38", getEnvBool("REDIS_EXPORTER_IS_TILE38", false), "Whether to scrape Tile38 specific metrics")
 		isCluster                      = flag.Bool("is-cluster", getEnvBool("REDIS_EXPORTER_IS_CLUSTER", false), "Whether this is a redis cluster (Enable this if you need to fetch key level data on a Redis Cluster).")
+		clusterDiscoverHostnames       = flag.Bool("cluster-discover-hostnames", getEnvBool("REDIS_EXPORTER_CLUSTER_DISCOVER_HOSTNAMES", false), "Whether to use hostname for cluster node discovery if available via `/discover-cluster-nodes` endpoint.")
 		exportClientList               = flag.Bool("export-client-list", getEnvBool("REDIS_EXPORTER_EXPORT_CLIENT_LIST", false), "Whether to scrape Client List specific metrics")
 		exportClientPort               = flag.Bool("export-client-port", getEnvBool("REDIS_EXPORTER_EXPORT_CLIENT_PORT", false), "Whether to include the client's port when exporting the client list. Warning: including the port increases the number of metrics generated and will make your Prometheus server take up more memory")
 		showVersion                    = flag.Bool("version", false, "Show version information and exit")
-		redisMetricsOnly               = flag.Bool("redis-only-metrics", getEnvBool("REDIS_EXPORTER_REDIS_ONLY_METRICS", false), "Whether to also export go runtime metrics")
+		redisMetricsOnly               = flag.Bool("redis-only-metrics", getEnvBool("REDIS_EXPORTER_REDIS_ONLY_METRICS", false), "Whether to export only Redis metrics (omit Go process+runtime metrics)")
+		inclGoRuntimeMetrics           = flag.Bool("include-go-runtime-metrics", getEnvBool("REDIS_EXPORTER_INCLUDE_GO_RUNTIME_METRICS", false), "Whether to include Go runtime metrics")
 		pingOnConnect                  = flag.Bool("ping-on-connect", getEnvBool("REDIS_EXPORTER_PING_ON_CONNECT", false), "Whether to ping the redis instance after connecting")
 		inclConfigMetrics              = flag.Bool("include-config-metrics", getEnvBool("REDIS_EXPORTER_INCL_CONFIG_METRICS", false), "Whether to include all config settings as metrics")
 		inclModulesMetrics             = flag.Bool("include-modules-metrics", getEnvBool("REDIS_EXPORTER_INCL_MODULES_METRICS", false), "Whether to collect Redis Modules metrics")
 		inclAofFileSize                = flag.Bool("include-aof-file-size", getEnvBool("REDIS_EXPORTER_INCL_AOF_FILE_SIZE", false), "Whether to collect AOF file size metrics")
 		overrideAofFilePath            = flag.String("override-aof-file-path", getEnv("REDIS_EXPORTER_OVERRIDE_AOF_FILE_PATH", ""), "Override the AOF file path in the metrics")
+		inclSearchIndexesMetrics       = flag.Bool("include-search-indexes-metrics", getEnvBool("REDIS_EXPORTER_INCL_SEARCH_INDEXES_METRICS", false), "Whether to collect Redis Search indexes metrics")
+		checkSearchIndexes             = flag.String("check-search-indexes", getEnv("REDIS_EXPORTER_CHECK_SEARCH_INDEXES", ".*"), "Regex pattern for Redis Search indexes to export metrics from FT.INFO command")
 		disableExportingKeyValues      = flag.Bool("disable-exporting-key-values", getEnvBool("REDIS_EXPORTER_DISABLE_EXPORTING_KEY_VALUES", false), "Whether to disable values of keys stored in redis as labels or not when using check-keys/check-single-key")
 		excludeLatencyHistogramMetrics = flag.Bool("exclude-latency-histogram-metrics", getEnvBool("REDIS_EXPORTER_EXCLUDE_LATENCY_HISTOGRAM_METRICS", false), "Do not try to collect latency histogram metrics")
 		redactConfigMetrics            = flag.Bool("redact-config-metrics", getEnvBool("REDIS_EXPORTER_REDACT_CONFIG_METRICS", true), "Whether to redact config settings that include potentially sensitive information like passwords")
@@ -105,19 +208,16 @@ func main() {
 		skipTLSVerification            = flag.Bool("skip-tls-verification", getEnvBool("REDIS_EXPORTER_SKIP_TLS_VERIFICATION", false), "Whether to to skip TLS verification")
 		skipCheckKeysForRoleMaster     = flag.Bool("skip-checkkeys-for-role-master", getEnvBool("REDIS_EXPORTER_SKIP_CHECKKEYS_FOR_ROLE_MASTER", false), "Whether to skip gathering the check-keys metrics (size, val) when the instance is of type master (reduce load on master nodes)")
 		basicAuthUsername              = flag.String("basic-auth-username", getEnv("REDIS_EXPORTER_BASIC_AUTH_USERNAME", ""), "Username for basic authentication")
-		basicAuthPassword              = flag.String("basic-auth-password", getEnv("REDIS_EXPORTER_BASIC_AUTH_PASSWORD", ""), "Password for basic authentication")
+		basicAuthPassword              = flag.String("basic-auth-password", getEnv("REDIS_EXPORTER_BASIC_AUTH_PASSWORD", ""), "Password for basic authentication, conflicts with --basic-auth-hash-password")
+		basicAuthHashPassword          = flag.String("basic-auth-hash-password", getEnv("REDIS_EXPORTER_BASIC_AUTH_HASH_PASSWORD", ""), "Hashed password for basic authentication, bcrypt format, conflicts with --basic-auth-password")
+		disableScrapeEndpoint          = flag.Bool("disable-scrape-endpoint", getEnvBool("REDIS_EXPORTER_DISABLE_SCRAPE_ENDPOINT", false), "Whether to disable the /scrape endpoint")
 		inclMetricsForEmptyDatabases   = flag.Bool("include-metrics-for-empty-databases", getEnvBool("REDIS_EXPORTER_INCL_METRICS_FOR_EMPTY_DATABASES", true), "Whether to emit db metrics (like db_keys) for empty databases")
 		slowlogHistoryEnabled          = flag.Bool("slowlog-history-enabled", getEnvBool("REDIS_EXPORTER_SLOWLOG_HISTORY_ENABLED", false), "Whether to included the slowlog metrics history")
 		isFalkorDB                     = flag.Bool("is-falkordb", getEnvBool("REDIS_EXPORTER_IS_FALKORDB", false), "Whether this is a FalkorDB instance")
+		appendInstanceRoleLabel        = flag.Bool("append-instance-role-label", getEnvBool("REDIS_EXPORTER_APPEND_INSTANCE_ROLE_LABEL", false), "Whether to append 'instance_role' label to redis metrics")
 	)
 	flag.Parse()
 
-	switch *logFormat {
-	case "json":
-		log.SetFormatter(&log.JSONFormatter{})
-	default:
-		log.SetFormatter(&log.TextFormatter{})
-	}
 	if *showVersion {
 		log.SetOutput(os.Stdout)
 	}
@@ -130,12 +230,14 @@ func main() {
 	if *showVersion {
 		return
 	}
-	if *isDebug {
-		log.SetLevel(log.DebugLevel)
-		log.Debugln("Enabling debug output")
-	} else {
-		log.SetLevel(log.InfoLevel)
+
+	if err := setupLogging(*isDebug, *logLevel, *logFormat); err != nil {
+		log.Fatalf("Failed to setup logging: %v", err)
 	}
+	if *isDebug {
+		log.Debugln("Enabling debug output")
+	}
+	log.Infof(`Setting log level to "%s"`, log.GetLevel().String())
 
 	to, err := time.ParseDuration(*connectionTimeout)
 	if err != nil {
@@ -150,26 +252,12 @@ func main() {
 		}
 	}
 
-	var ls map[string][]byte
-	if *scriptPath != "" {
-		scripts := strings.Split(*scriptPath, ",")
-		ls = make(map[string][]byte, len(scripts))
-		for _, script := range scripts {
-			if ls[script], err = os.ReadFile(script); err != nil {
-				log.Fatalf("Error loading script file %s    err: %s", script, err)
-			}
-		}
+	ls, err := loadScripts(*scriptPath)
+	if err != nil {
+		log.Fatalf("Error loading script files: %s", err)
 	}
 
-	registry := prometheus.NewRegistry()
-	if !*redisMetricsOnly {
-		registry.MustRegister(
-			// expose process metrics like CPU, Memory, file descriptor usage etc.
-			collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-			// expose all Go runtime metrics like GC stats, memory stats etc.
-			collectors.NewGoCollector(collectors.WithGoCollectorRuntimeMetrics(collectors.MetricsAll)),
-		)
-	}
+	registry := createPrometheusRegistry(*redisMetricsOnly, *inclGoRuntimeMetrics)
 
 	exp, err := exporter.NewRedisExporter(
 		*redisAddr,
@@ -189,6 +277,7 @@ func main() {
 			StreamsExcludeConsumerMetrics:  *streamsExcludeConsumerMetrics,
 			CountKeys:                      *countKeys,
 			LuaScript:                      ls,
+			LuaScriptReadOnly:              *luaScriptReadOnly,
 			InclSystemMetrics:              *inclSystemMetrics,
 			InclConfigMetrics:              *inclConfigMetrics,
 			DisableExportingKeyValues:      *disableExportingKeyValues,
@@ -197,10 +286,13 @@ func main() {
 			SetClientName:                  *setClientName,
 			IsTile38:                       *isTile38,
 			IsCluster:                      *isCluster,
+			ClusterDiscoverHostnames:       *clusterDiscoverHostnames,
 			InclModulesMetrics:             *inclModulesMetrics,
 			InclAofFileSize:                *inclAofFileSize,
 			SlowlogHistoryEnabled:          *slowlogHistoryEnabled,
 			OverrideAofFilePath:            *overrideAofFilePath,
+			InclSearchIndexesMetrics:       *inclSearchIndexesMetrics,
+			CheckSearchIndexes:             *checkSearchIndexes,
 			ExportClientList:               *exportClientList,
 			ExportClientsInclPort:          *exportClientPort,
 			SkipCheckKeysForRoleMaster:     *skipCheckKeysForRoleMaster,
@@ -221,17 +313,24 @@ func main() {
 			},
 			BasicAuthUsername:            *basicAuthUsername,
 			BasicAuthPassword:            *basicAuthPassword,
+			BasicAuthHashPassword:        *basicAuthHashPassword,
+			DisableScrapeEndpoint:        *disableScrapeEndpoint,
 			InclMetricsForEmptyDatabases: *inclMetricsForEmptyDatabases,
 			IsFalkorDB:                   *isFalkorDB,
+			AppendInstanceRoleLabel:      *appendInstanceRoleLabel,
 		},
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Validate auth parameters
+	if err := validateAuthParams(*basicAuthPassword, *basicAuthHashPassword); err != nil {
+		log.Fatal(err)
+	}
 
 	// Verify that initial client keypair and CA are accepted
-	if (*tlsClientCertFile != "") != (*tlsClientKeyFile != "") {
-		log.Fatal("TLS client key file and cert file should both be present")
+	if err := validateTLSClientConfig(*tlsClientCertFile, *tlsClientKeyFile); err != nil {
+		log.Fatal(err)
 	}
 	_, err = exp.CreateClientTLSConfig()
 	if err != nil {
