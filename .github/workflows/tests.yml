@@ -115,6 +115,11 @@ jobs:
 
   build-stuff:
     runs-on: ubuntu-latest
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -135,37 +140,41 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
 
-      - name: Test Docker Image Build - Alpine
+      - name: Test Docker Image Build - Alpine (push to local registry)
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
         with:
-          push: false
+          push: true
           target: alpine
-          tags: user/app:alpine-tst
+          tags: localhost:5000/redis_exporter:alpine-test
+          file: Dockerfile
+          build-args: "GOARCH=amd64"
+
+      - name: Test Docker Image Build - Scratch (push to local registry)
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
+        with:
+          push: true
+          target: scratch-release
+          tags: localhost:5000/redis_exporter:scratch-test
           file: Dockerfile
           build-args: "GOARCH=amd64"
 
       - name: Scan Alpine image with Grype
         uses: anchore/scan-action@1638637db639e0ade3258b51db49a9a137574c3e # v6
         with:
-          image: user/app:alpine-tst
+          image: localhost:5000/redis_exporter:alpine-test
           fail-build: true
           severity-cutoff: high
           only-fixed: true
 
-      - name: Test Docker Image Build - Scratch
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7
-        with:
-          push: false
-          target: scratch-release
-          tags: user/app:scratch-tst
-          file: Dockerfile
-          build-args: "GOARCH=amd64"
-
       - name: Scan Scratch image with Grype
         uses: anchore/scan-action@1638637db639e0ade3258b51db49a9a137574c3e # v6
         with:
-          image: user/app:scratch-tst
+          image: localhost:5000/redis_exporter:scratch-test
           fail-build: true
           severity-cutoff: high
           only-fixed: true
