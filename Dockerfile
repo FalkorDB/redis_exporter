@@ -43,6 +43,8 @@ ENTRYPOINT [ "/redis_exporter" ]
 #
 FROM alpine:${ALPINE_VERSION} AS alpine
 
+RUN apk upgrade --no-cache
+
 COPY --from=builder /redis_exporter /redis_exporter
 COPY --from=builder /etc/ssl/certs /etc/ssl/certs
 
