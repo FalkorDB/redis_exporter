@@ -107,32 +107,15 @@ func (e *Exporter) extractSentinelConfig(ch chan<- prometheus.Metric, c redis.Co
 	if !e.options.InclConfigMetrics {
 		return
 	}
-	sentinelConfig, err := redis.Values(doRedisCmd(c, "SENTINEL", "config", "get", "*"))
+	sentinelConfig, err := redis.StringMap(doRedisCmd(c, "SENTINEL", "config", "get", "*"))
 	if err != nil {
 		log.Errorf("Error getting sentinel config: %s", err)
 		return
 	}
 
-	if len(sentinelConfig)%2 != 0 {
-		log.Errorf("Invalid sentinel config, got: %#v", sentinelConfig)
-		return
-	}
-
 	log.Debugf("Sentinel config: %v", sentinelConfig)
 
-	for pos := 0; pos < len(sentinelConfig)/2; pos++ {
-		strKey, err := redis.String(sentinelConfig[pos*2], nil)
-		if err != nil {
-			log.Errorf("invalid sentinel config key name, err: %s, skipped", err)
-			continue
-		}
-
-		strVal, err := redis.String(sentinelConfig[pos*2+1], nil)
-		if err != nil {
-			log.Debugf("invalid sentinel config value for key name %s, err: %s, skipped", strKey, err)
-			continue
-		}
-
+	for strKey, strVal := range sentinelConfig {
 		e.registerConstMetricGauge(ch, "sentinel_config_key_value", 1.0, strKey, strVal)
 		if val, err := strconv.ParseFloat(strVal, 64); err == nil {
 			e.registerConstMetricGauge(ch, "sentinel_config_value", val, strKey)
@@ -144,6 +127,13 @@ func (e *Exporter) processSentinelSentinels(ch chan<- prometheus.Metric, sentine
 
 	// If we are here then this master is in ok state
 	masterOkSentinels := 1
+	hasMasterLabels := len(labels) >= 2
+	masterName := ""
+	masterAddr := ""
+	if hasMasterLabels {
+		masterName = labels[0]
+		masterAddr = labels[1]
+	}
 
 	for _, sentinelDetail := range sentinelDetails {
 		sentinelDetailMap, err := redis.StringMap(sentinelDetail, nil)
@@ -152,14 +142,39 @@ func (e *Exporter) processSentinelSentinels(ch chan<- prometheus.Metric, sentine
 			continue
 		}
 
-		sentinelFlags, ok := sentinelDetailMap["flags"]
-		if !ok {
+		name := ""
+		if v, ok := sentinelDetailMap["name"]; ok {
+			name = v
+		}
+		ip := ""
+		if v, ok := sentinelDetailMap["ip"]; ok {
+			ip = v
+		}
+		port := ""
+		if v, ok := sentinelDetailMap["port"]; ok {
+			port = v
+		}
+		runid := ""
+		if v, ok := sentinelDetailMap["runid"]; ok {
+			runid = v
+		}
+		flags := ""
+		flagsFound := false
+		if v, ok := sentinelDetailMap["flags"]; ok {
+			flags = v
+			flagsFound = true
+		}
+		if e.options.InclSentinelPeerInfo && hasMasterLabels {
+			e.registerConstMetricGauge(ch, "sentinel_peer_info", 1, masterName, masterAddr, name, ip, port, runid, flags)
+		}
+
+		if !flagsFound {
 			continue
 		}
-		if strings.Contains(sentinelFlags, "o_down") {
+		if strings.Contains(flags, "o_down") {
 			continue
 		}
-		if strings.Contains(sentinelFlags, "s_down") {
+		if strings.Contains(flags, "s_down") {
 			continue
 		}
 		masterOkSentinels = masterOkSentinels + 1
@@ -188,7 +203,9 @@ func (e *Exporter) processSentinelSlaves(ch chan<- prometheus.Metric, slaveDetai
 		}
 		masterOkSlaves = masterOkSlaves + 1
 	}
-	e.registerConstMetricGauge(ch, "sentinel_master_ok_slaves", float64(masterOkSlaves), labels...)
+	if len(labels) >= 2 {
+		e.registerConstMetricGauge(ch, "sentinel_master_ok_slaves", float64(masterOkSlaves), labels...)
+	}
 }
 
 /*

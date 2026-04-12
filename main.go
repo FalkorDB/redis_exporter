@@ -200,6 +200,7 @@ func main() {
 		inclAofFileSize                = flag.Bool("include-aof-file-size", getEnvBool("REDIS_EXPORTER_INCL_AOF_FILE_SIZE", false), "Whether to collect AOF file size metrics")
 		overrideAofFilePath            = flag.String("override-aof-file-path", getEnv("REDIS_EXPORTER_OVERRIDE_AOF_FILE_PATH", ""), "Override the AOF file path in the metrics")
 		inclSearchIndexesMetrics       = flag.Bool("include-search-indexes-metrics", getEnvBool("REDIS_EXPORTER_INCL_SEARCH_INDEXES_METRICS", false), "Whether to collect Redis Search indexes metrics")
+		inclSentinelPeerInfo           = flag.Bool("include-sentinel-peer-info", getEnvBool("REDIS_EXPORTER_INCL_SENTINEL_PEER_INFO", false), "Whether to export sentinel_peer_info metrics (high cardinality)")
 		checkSearchIndexes             = flag.String("check-search-indexes", getEnv("REDIS_EXPORTER_CHECK_SEARCH_INDEXES", ".*"), "Regex pattern for Redis Search indexes to export metrics from FT.INFO command")
 		disableExportingKeyValues      = flag.Bool("disable-exporting-key-values", getEnvBool("REDIS_EXPORTER_DISABLE_EXPORTING_KEY_VALUES", false), "Whether to disable values of keys stored in redis as labels or not when using check-keys/check-single-key")
 		excludeLatencyHistogramMetrics = flag.Bool("exclude-latency-histogram-metrics", getEnvBool("REDIS_EXPORTER_EXCLUDE_LATENCY_HISTOGRAM_METRICS", false), "Do not try to collect latency histogram metrics")
@@ -292,6 +293,7 @@ func main() {
 			SlowlogHistoryEnabled:          *slowlogHistoryEnabled,
 			OverrideAofFilePath:            *overrideAofFilePath,
 			InclSearchIndexesMetrics:       *inclSearchIndexesMetrics,
+			InclSentinelPeerInfo:           *inclSentinelPeerInfo,
 			CheckSearchIndexes:             *checkSearchIndexes,
 			ExportClientList:               *exportClientList,
 			ExportClientsInclPort:          *exportClientPort,
