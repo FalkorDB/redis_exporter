@@ -7,6 +7,9 @@ on:
       - master
       - "v*"
       - "dev"
+  schedule:
+    - cron: '0 0 * * *' # every day at midnight
+  workflow_dispatch:
 
 jobs:
   test-stuff:
