@@ -15,6 +15,20 @@ func (e *Exporter) extractModulesMetrics(ch chan<- prometheus.Metric, c redis.Co
 		return
 	}
 
+	e.parseModulesInfo(ch, info)
+
+	// On some Redis 8 builds, detailed search stats (memory, GC, cursors,
+	// queries, dialects, etc.) are not included in INFO MODULES but are
+	// available via INFO SEARCH.
+	searchInfo, err := redis.String(doRedisCmd(c, "INFO", "SEARCH"))
+	if err != nil {
+		log.Debugf("extractModulesMetrics() INFO SEARCH not available: %s", err)
+	} else {
+		e.parseModulesInfo(ch, searchInfo)
+	}
+}
+
+func (e *Exporter) parseModulesInfo(ch chan<- prometheus.Metric, info string) {
 	lines := strings.Split(info, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
