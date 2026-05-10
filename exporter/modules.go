@@ -11,10 +11,22 @@ import (
 func (e *Exporter) extractModulesMetrics(ch chan<- prometheus.Metric, c redis.Conn) {
 	info, err := redis.String(doRedisCmd(c, "INFO", "MODULES"))
 	if err != nil {
-		log.Errorf("extractSearchMetrics() err: %s", err)
+		log.Errorf("extractModulesMetrics() err: %s", err)
 		return
 	}
 
+	e.parseModulesInfo(ch, info)
+
+	// In Redis 8+, search metrics moved from INFO MODULES to INFO SEARCH
+	searchInfo, err := redis.String(doRedisCmd(c, "INFO", "SEARCH"))
+	if err != nil {
+		log.Debugf("extractModulesMetrics() INFO SEARCH err: %s", err)
+	} else {
+		e.parseModulesInfo(ch, searchInfo)
+	}
+}
+
+func (e *Exporter) parseModulesInfo(ch chan<- prometheus.Metric, info string) {
 	lines := strings.SplitSeq(info, "\r\n")
 	for line := range lines {
 		log.Debugf("info: %s", line)
