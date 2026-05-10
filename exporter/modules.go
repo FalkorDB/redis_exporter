@@ -15,18 +15,6 @@ func (e *Exporter) extractModulesMetrics(ch chan<- prometheus.Metric, c redis.Co
 		return
 	}
 
-	e.parseModulesInfo(ch, info)
-
-	// In Redis 8+, search metrics moved from INFO MODULES to INFO SEARCH
-	searchInfo, err := redis.String(doRedisCmd(c, "INFO", "SEARCH"))
-	if err != nil {
-		log.Debugf("extractModulesMetrics() INFO SEARCH err: %s", err)
-	} else {
-		e.parseModulesInfo(ch, searchInfo)
-	}
-}
-
-func (e *Exporter) parseModulesInfo(ch chan<- prometheus.Metric, info string) {
 	lines := strings.Split(info, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
