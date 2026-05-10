@@ -1,10 +1,12 @@
 package exporter
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/gomodule/redigo/redis"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -12,6 +14,69 @@ func TestModulesv80(t *testing.T) {
 	if os.Getenv("TEST_REDIS8_URI") == "" || os.Getenv("TEST_REDIS_URI") == "" {
 		t.Skipf("TEST_REDIS8_URI or TEST_REDIS_URI aren't set - skipping")
 	}
+
+	// --- Diagnostic: directly query Redis 8 to see what INFO MODULES returns ---
+	diagConn, err := redis.DialURL(os.Getenv("TEST_REDIS8_URI"))
+	if err != nil {
+		t.Logf("DIAG: failed to connect to Redis 8: %s", err)
+	} else {
+		defer diagConn.Close()
+
+		infoModules, err := redis.String(diagConn.Do("INFO", "MODULES"))
+		if err != nil {
+			t.Logf("DIAG: INFO MODULES error: %s", err)
+		} else {
+			lines := strings.Split(infoModules, "\n")
+			t.Logf("DIAG: INFO MODULES total lines: %d", len(lines))
+			searchCount := 0
+			for _, l := range lines {
+				l = strings.TrimSpace(l)
+				if strings.HasPrefix(l, "# ") || strings.HasPrefix(l, "module:") {
+					t.Logf("DIAG: INFO MODULES section/module: %s", l)
+				}
+				if strings.HasPrefix(l, "search_") {
+					searchCount++
+				}
+			}
+			t.Logf("DIAG: INFO MODULES search_ field count: %d", searchCount)
+			// Log a few specific fields we expect
+			for _, l := range lines {
+				l = strings.TrimSpace(l)
+				if strings.HasPrefix(l, "search_used_memory_indexes:") ||
+					strings.HasPrefix(l, "search_dialect_1:") ||
+					strings.HasPrefix(l, "search_gc_total_cycles:") {
+					t.Logf("DIAG: INFO MODULES field: %s", l)
+				}
+			}
+		}
+
+		infoSearch, err := redis.String(diagConn.Do("INFO", "SEARCH"))
+		if err != nil {
+			t.Logf("DIAG: INFO SEARCH error: %s", err)
+		} else {
+			lines := strings.Split(infoSearch, "\n")
+			t.Logf("DIAG: INFO SEARCH total lines: %d", len(lines))
+			searchCount := 0
+			for _, l := range lines {
+				if strings.HasPrefix(strings.TrimSpace(l), "search_") {
+					searchCount++
+				}
+			}
+			t.Logf("DIAG: INFO SEARCH search_ field count: %d", searchCount)
+		}
+
+		// Check what version of Redis we're talking to
+		infoServer, err := redis.String(diagConn.Do("INFO", "SERVER"))
+		if err == nil {
+			for _, l := range strings.Split(infoServer, "\n") {
+				l = strings.TrimSpace(l)
+				if strings.HasPrefix(l, "redis_version:") {
+					t.Logf("DIAG: %s", l)
+				}
+			}
+		}
+	}
+	// --- End diagnostic ---
 
 	tsts := []struct {
 		addr               string
@@ -24,7 +89,8 @@ func TestModulesv80(t *testing.T) {
 		{addr: os.Getenv("TEST_REDIS_URI"), inclModulesMetrics: false, wantModulesMetrics: false},
 	}
 
-	for _, tst := range tsts {
+	for i, tst := range tsts {
+		t.Logf("DIAG: test case %d addr=%s inclModules=%v wantModules=%v", i, tst.addr, tst.inclModulesMetrics, tst.wantModulesMetrics)
 		e, _ := NewRedisExporter(tst.addr, Options{Namespace: "test", InclModulesMetrics: tst.inclModulesMetrics})
 
 		chM := make(chan prometheus.Metric)
@@ -65,24 +131,36 @@ func TestModulesv80(t *testing.T) {
 			"search_active_queries_total":                     false,
 		}
 
+		foundSearchMetrics := []string{}
 		for m := range chM {
+			desc := m.Desc().String()
+			if i == 0 && (strings.Contains(desc, "search_") || strings.Contains(desc, "module_info")) {
+				foundSearchMetrics = append(foundSearchMetrics, fmt.Sprintf("%s", desc))
+			}
 			for want := range wantedMetrics {
-				if strings.Contains(m.Desc().String(), want) {
+				if strings.Contains(desc, want) {
 					wantedMetrics[want] = true
 				}
+			}
+		}
+
+		if i == 0 {
+			t.Logf("DIAG: case %d collected %d search/module metrics", i, len(foundSearchMetrics))
+			for _, d := range foundSearchMetrics {
+				t.Logf("DIAG: collected: %s", d)
 			}
 		}
 
 		if tst.wantModulesMetrics {
 			for want, found := range wantedMetrics {
 				if !found {
-					t.Errorf("%s was *not* found in Redis Modules metrics but expected", want)
+					t.Errorf("case %d: %s was *not* found in Redis Modules metrics but expected", i, want)
 				}
 			}
 		} else if !tst.wantModulesMetrics {
 			for want, found := range wantedMetrics {
 				if found {
-					t.Errorf("%s was *found* in Redis Modules metrics but *not* expected", want)
+					t.Errorf("case %d: %s was *found* in Redis Modules metrics but *not* expected", i, want)
 				}
 			}
 		}
