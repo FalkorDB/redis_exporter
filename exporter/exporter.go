@@ -624,20 +624,19 @@ func NewRedisExporter(uri string, opts Options) (*Exporter, error) {
 		"up":                                                 {txt: "Information about the Redis instance"},
 		"aof_file_size_bytes":                                {txt: "AOF file size in bytes", lbls: []string{"filename"}},
 		"falkordb_total_graph_count":                         {txt: "Total number of graphs"},
-		"falkordb_graph_memory_total_mb":                     {txt: "Total memory consumed by graph in MB", lbls: []string{"graph"}},
-		"falkordb_graph_label_matrices_mb":                   {txt: "Memory used by label matrices in MB", lbls: []string{"graph"}},
-		"falkordb_graph_relation_matrices_mb":                {txt: "Memory used by relation matrices in MB", lbls: []string{"graph"}},
-		"falkordb_graph_node_block_mb":                       {txt: "Memory used by node blocks in MB", lbls: []string{"graph"}},
-		"falkordb_graph_node_attributes_mb":                  {txt: "Memory used by node attributes per label in MB", lbls: []string{"graph", "label"}},
-		"falkordb_graph_unlabeled_node_attributes_mb":        {txt: "Memory used by unlabeled node attributes in MB", lbls: []string{"graph"}},
-		"falkordb_graph_edge_block_mb":                       {txt: "Memory used by edge blocks in MB", lbls: []string{"graph"}},
-		"falkordb_graph_edge_attributes_mb":                  {txt: "Memory used by edge attributes per type in MB", lbls: []string{"graph", "type"}},
-		"falkordb_graph_indices_mb":                          {txt: "Memory used by indices in MB", lbls: []string{"graph"}},
 	} {
 		if e.options.AppendInstanceRoleLabel {
 			desc.lbls = append(desc.lbls, "instance_role") // append instance_role label to all metrics
 		}
 		e.metricDescriptions[k] = newMetricDescr(opts.Namespace, k, desc.txt, desc.lbls)
+	}
+
+	for k, desc := range falkorDBGraphMemoryMetrics {
+		lbls := desc.lbls
+		if e.options.AppendInstanceRoleLabel {
+			lbls = append(lbls, "instance_role")
+		}
+		e.metricDescriptions[k] = newMetricDescr(opts.Namespace, k, desc.txt, lbls)
 	}
 
 	if e.options.MetricsPath == "" {

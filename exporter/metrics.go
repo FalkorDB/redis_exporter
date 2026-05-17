@@ -147,3 +147,19 @@ func (e *Exporter) createMetricDescription(metricName string, labels []string) *
 	e.metricDescriptions[metricName] = d
 	return d
 }
+
+// FalkorDB graph memory metric descriptors.
+var falkorDBGraphMemoryMetrics = map[string]struct {
+	txt  string
+	lbls []string
+}{
+	"falkordb_graph_memory_total_mb":              {txt: "Total memory consumed by graph in MB", lbls: []string{"graph"}},
+	"falkordb_graph_label_matrices_mb":            {txt: "Memory used by label matrices in MB", lbls: []string{"graph"}},
+	"falkordb_graph_relation_matrices_mb":         {txt: "Memory used by relation matrices in MB", lbls: []string{"graph"}},
+	"falkordb_graph_node_block_mb":                {txt: "Memory used by node blocks in MB", lbls: []string{"graph"}},
+	"falkordb_graph_node_attributes_mb":           {txt: "Memory used by node attributes per label in MB", lbls: []string{"graph", "label"}},
+	"falkordb_graph_unlabeled_node_attributes_mb": {txt: "Memory used by unlabeled node attributes in MB", lbls: []string{"graph"}},
+	"falkordb_graph_edge_block_mb":                {txt: "Memory used by edge blocks in MB", lbls: []string{"graph"}},
+	"falkordb_graph_edge_attributes_mb":           {txt: "Memory used by edge attributes per type in MB", lbls: []string{"graph", "type"}},
+	"falkordb_graph_indices_mb":                   {txt: "Memory used by indices in MB", lbls: []string{"graph"}},
+}

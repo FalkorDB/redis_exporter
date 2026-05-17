@@ -25,7 +25,10 @@ func TestFalkorDB(t *testing.T) {
 	}
 
 	for _, tst := range tsts {
-		e, _ := NewRedisExporter(tst.addr, Options{Namespace: "test", IsFalkorDB: tst.isFalkorDB})
+		e, err := NewRedisExporter(tst.addr, Options{Namespace: "test", IsFalkorDB: tst.isFalkorDB})
+		if err != nil {
+			t.Fatalf("NewRedisExporter() err: %s", err)
+		}
 
 		chM := make(chan prometheus.Metric)
 		go func() {
