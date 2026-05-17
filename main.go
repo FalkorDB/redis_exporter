@@ -57,6 +57,16 @@ func getEnvInt64(key string, defaultVal int64) int64 {
 	return defaultVal
 }
 
+func getEnvDuration(key string, defaultVal time.Duration) time.Duration {
+	if envVal, ok := os.LookupEnv(key); ok {
+		d, err := time.ParseDuration(envVal)
+		if err == nil {
+			return d
+		}
+	}
+	return defaultVal
+}
+
 // parseLogLevel parses a log level string and returns the corresponding logrus level
 func parseLogLevel(level string) (log.Level, error) {
 	switch strings.ToUpper(level) {
@@ -215,6 +225,8 @@ func main() {
 		inclMetricsForEmptyDatabases   = flag.Bool("include-metrics-for-empty-databases", getEnvBool("REDIS_EXPORTER_INCL_METRICS_FOR_EMPTY_DATABASES", true), "Whether to emit db metrics (like db_keys) for empty databases")
 		slowlogHistoryEnabled          = flag.Bool("slowlog-history-enabled", getEnvBool("REDIS_EXPORTER_SLOWLOG_HISTORY_ENABLED", false), "Whether to included the slowlog metrics history")
 		isFalkorDB                     = flag.Bool("is-falkordb", getEnvBool("REDIS_EXPORTER_IS_FALKORDB", false), "Whether this is a FalkorDB instance")
+		inclFalkorDBGraphMemory        = flag.Bool("include-falkordb-graph-memory", getEnvBool("REDIS_EXPORTER_INCL_FALKORDB_GRAPH_MEMORY", false), "Whether to collect per-graph GRAPH.MEMORY USAGE metrics for FalkorDB")
+		falkorDBGraphMemoryCacheTTL    = flag.Duration("falkordb-graph-memory-cache-ttl", getEnvDuration("REDIS_EXPORTER_FALKORDB_GRAPH_MEMORY_CACHE_TTL", 60*time.Second), "TTL for caching FalkorDB GRAPH.MEMORY results")
 		appendInstanceRoleLabel        = flag.Bool("append-instance-role-label", getEnvBool("REDIS_EXPORTER_APPEND_INSTANCE_ROLE_LABEL", false), "Whether to append 'instance_role' label to redis metrics")
 	)
 	flag.Parse()
@@ -319,6 +331,8 @@ func main() {
 			DisableScrapeEndpoint:        *disableScrapeEndpoint,
 			InclMetricsForEmptyDatabases: *inclMetricsForEmptyDatabases,
 			IsFalkorDB:                   *isFalkorDB,
+			InclFalkorDBGraphMemory:      *inclFalkorDBGraphMemory,
+			FalkorDBGraphMemoryCacheTTL:  *falkorDBGraphMemoryCacheTTL,
 			AppendInstanceRoleLabel:      *appendInstanceRoleLabel,
 		},
 	)
