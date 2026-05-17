@@ -38,14 +38,18 @@ func (e *Exporter) extractFalkorDBMetrics(ch chan<- prometheus.Metric, c redis.C
 	e.extractFalkorDBGraphMemoryMetrics(ch, c, graphList)
 }
 
+// extractFalkorDBGraphMemoryMetrics collects GRAPH.MEMORY USAGE for each graph.
+// Note: The cache lives on the Exporter instance. When using the /scrape endpoint
+// (multi-target pattern), a fresh Exporter is created per request, so the cache
+// will not persist across scrapes in that mode.
 func (e *Exporter) extractFalkorDBGraphMemoryMetrics(ch chan<- prometheus.Metric, c redis.Conn, graphList []interface{}) {
 	ttl := e.options.FalkorDBGraphMemoryCacheTTL
 	if ttl == 0 {
 		ttl = 60 * time.Second
 	}
 
-	// Use cached results if still valid
-	if e.graphMemoryCache != nil && time.Since(e.graphMemoryCacheTime) < ttl {
+	// Use cached results if still valid and graph list hasn't changed
+	if e.graphMemoryCache != nil && time.Since(e.graphMemoryCacheTime) < ttl && graphListMatches(e.graphMemoryCache, graphList) {
 		e.emitGraphMemoryMetrics(ch, e.graphMemoryCache)
 		return
 	}
@@ -94,27 +98,48 @@ func (e *Exporter) fetchGraphMemory(c redis.Conn, graphName string) (graphMemory
 
 		switch key {
 		case "total_graph_sz_mb":
-			result.TotalGraphSzMB, _ = redis.Int64(vals[i+1], nil)
+			result.TotalGraphSzMB, err = redis.Int64(vals[i+1], nil)
 		case "label_matrices_sz_mb":
-			result.LabelMatricesSzMB, _ = redis.Int64(vals[i+1], nil)
+			result.LabelMatricesSzMB, err = redis.Int64(vals[i+1], nil)
 		case "relation_matrices_sz_mb":
-			result.RelationMatricesSzMB, _ = redis.Int64(vals[i+1], nil)
+			result.RelationMatricesSzMB, err = redis.Int64(vals[i+1], nil)
 		case "amortized_node_block_sz_mb":
-			result.NodeBlockSzMB, _ = redis.Int64(vals[i+1], nil)
+			result.NodeBlockSzMB, err = redis.Int64(vals[i+1], nil)
 		case "amortized_node_attributes_by_label_sz_mb":
 			result.NodeAttrsByLabel = parseFlatMap(vals[i+1])
 		case "amortized_unlabeled_nodes_attributes_sz_mb":
-			result.UnlabeledNodeAttrsSzMB, _ = redis.Int64(vals[i+1], nil)
+			result.UnlabeledNodeAttrsSzMB, err = redis.Int64(vals[i+1], nil)
 		case "amortized_edge_block_sz_mb":
-			result.EdgeBlockSzMB, _ = redis.Int64(vals[i+1], nil)
+			result.EdgeBlockSzMB, err = redis.Int64(vals[i+1], nil)
 		case "amortized_edge_attributes_by_type_sz_mb":
 			result.EdgeAttrsByType = parseFlatMap(vals[i+1])
 		case "indices_sz_mb":
-			result.IndicesSzMB, _ = redis.Int64(vals[i+1], nil)
+			result.IndicesSzMB, err = redis.Int64(vals[i+1], nil)
+		}
+		if err != nil {
+			log.Debugf("fetchGraphMemory() couldn't parse value for key %q in graph %q: %s", key, graphName, err)
 		}
 	}
 
 	return result, nil
+}
+
+// graphListMatches returns true if the cached results correspond to the same set of graphs.
+func graphListMatches(cached []graphMemoryResult, graphList []interface{}) bool {
+	if len(cached) != len(graphList) {
+		return false
+	}
+	cachedNames := make(map[string]bool, len(cached))
+	for _, r := range cached {
+		cachedNames[r.Graph] = true
+	}
+	for _, g := range graphList {
+		name, err := redis.String(g, nil)
+		if err != nil || !cachedNames[name] {
+			return false
+		}
+	}
+	return true
 }
 
 func parseFlatMap(val interface{}) map[string]int64 {

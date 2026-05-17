@@ -64,11 +64,14 @@ func TestFalkorDBGraphMemory(t *testing.T) {
 		t.Skipf("TEST_FALKORDB_URI not set - skipping")
 	}
 
-	e, _ := NewRedisExporter(os.Getenv("TEST_FALKORDB_URI"), Options{
+	e, err := NewRedisExporter(os.Getenv("TEST_FALKORDB_URI"), Options{
 		Namespace:               "test",
 		IsFalkorDB:              true,
 		InclFalkorDBGraphMemory: true,
 	})
+	if err != nil {
+		t.Fatalf("NewRedisExporter() err: %s", err)
+	}
 
 	chM := make(chan prometheus.Metric)
 	go func() {
@@ -136,11 +139,14 @@ func TestParseFlatMapNil(t *testing.T) {
 }
 
 func TestEmitGraphMemoryMetrics(t *testing.T) {
-	e, _ := NewRedisExporter("redis://localhost:6379", Options{
+	e, err := NewRedisExporter("redis://localhost:6379", Options{
 		Namespace:               "test",
 		IsFalkorDB:              true,
 		InclFalkorDBGraphMemory: true,
 	})
+	if err != nil {
+		t.Fatalf("NewRedisExporter() err: %s", err)
+	}
 
 	results := []graphMemoryResult{
 		{
