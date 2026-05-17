@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -207,6 +208,79 @@ func TestGetEnvInt64(t *testing.T) {
 			result := getEnvInt64(tt.key, tt.defaultVal)
 			if result != tt.expected {
 				t.Errorf("getEnvInt64() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetEnvDuration(t *testing.T) {
+	tests := []struct {
+		name       string
+		key        string
+		defaultVal time.Duration
+		envValue   string
+		setEnv     bool
+		expected   time.Duration
+	}{
+		{
+			name:       "valid duration in seconds",
+			key:        "TEST_DUR_SECONDS",
+			defaultVal: 30 * time.Second,
+			envValue:   "60s",
+			setEnv:     true,
+			expected:   60 * time.Second,
+		},
+		{
+			name:       "valid duration in minutes",
+			key:        "TEST_DUR_MINUTES",
+			defaultVal: 30 * time.Second,
+			envValue:   "5m",
+			setEnv:     true,
+			expected:   5 * time.Minute,
+		},
+		{
+			name:       "invalid duration returns default",
+			key:        "TEST_DUR_INVALID",
+			defaultVal: 45 * time.Second,
+			envValue:   "not_a_duration",
+			setEnv:     true,
+			expected:   45 * time.Second,
+		},
+		{
+			name:       "empty value returns default",
+			key:        "TEST_DUR_EMPTY",
+			defaultVal: 10 * time.Second,
+			envValue:   "",
+			setEnv:     true,
+			expected:   10 * time.Second,
+		},
+		{
+			name:       "env not set returns default",
+			key:        "NONEXISTENT_DUR_VAR",
+			defaultVal: 120 * time.Second,
+			setEnv:     false,
+			expected:   120 * time.Second,
+		},
+		{
+			name:       "zero duration",
+			key:        "TEST_DUR_ZERO",
+			defaultVal: 60 * time.Second,
+			envValue:   "0s",
+			setEnv:     true,
+			expected:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setEnv {
+				os.Setenv(tt.key, tt.envValue)
+				defer os.Unsetenv(tt.key)
+			}
+
+			result := getEnvDuration(tt.key, tt.defaultVal)
+			if result != tt.expected {
+				t.Errorf("getEnvDuration() = %v, expected %v", result, tt.expected)
 			}
 		})
 	}

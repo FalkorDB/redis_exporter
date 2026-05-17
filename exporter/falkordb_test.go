@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gomodule/redigo/redis"
 	"github.com/prometheus/client_golang/prometheus"
@@ -157,6 +158,24 @@ func TestParseFlatMapNil(t *testing.T) {
 	}
 }
 
+func TestParseFlatMapInvalidEntries(t *testing.T) {
+	// Mix valid and invalid entries: non-string key, non-int64 value, odd length
+	input := []interface{}{
+		int64(999), int64(10), // key is not a string -> skip
+		[]byte("Valid"), "not_an_int64", // value is not int64 -> skip
+		[]byte("Good"), int64(42), // valid
+		[]byte("Lonely"), // odd entry at end -> loop stops before out-of-bounds
+	}
+
+	result := parseFlatMap(input)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 entry, got %d: %v", len(result), result)
+	}
+	if result["Good"] != 42 {
+		t.Errorf("expected Good=42, got %d", result["Good"])
+	}
+}
+
 func TestEmitGraphMemoryMetrics(t *testing.T) {
 	e, err := NewRedisExporter("redis://localhost:6379", Options{
 		Namespace:               "test",
@@ -210,5 +229,155 @@ func TestEmitGraphMemoryMetrics(t *testing.T) {
 		if !found {
 			t.Errorf("%s was *not* found in emitted metrics but expected", want)
 		}
+	}
+}
+
+func TestGraphListMatches(t *testing.T) {
+	tests := []struct {
+		name      string
+		cached    []graphMemoryResult
+		graphList []interface{}
+		want      bool
+	}{
+		{
+			name:      "matching single graph",
+			cached:    []graphMemoryResult{{Graph: "flights"}},
+			graphList: []interface{}{[]byte("flights")},
+			want:      true,
+		},
+		{
+			name:      "matching multiple graphs",
+			cached:    []graphMemoryResult{{Graph: "flights"}, {Graph: "social"}},
+			graphList: []interface{}{[]byte("flights"), []byte("social")},
+			want:      true,
+		},
+		{
+			name:      "different lengths - cached longer",
+			cached:    []graphMemoryResult{{Graph: "flights"}, {Graph: "social"}},
+			graphList: []interface{}{[]byte("flights")},
+			want:      false,
+		},
+		{
+			name:      "different lengths - graphList longer",
+			cached:    []graphMemoryResult{{Graph: "flights"}},
+			graphList: []interface{}{[]byte("flights"), []byte("social")},
+			want:      false,
+		},
+		{
+			name:      "same length but different names",
+			cached:    []graphMemoryResult{{Graph: "flights"}},
+			graphList: []interface{}{[]byte("social")},
+			want:      false,
+		},
+		{
+			name:      "empty both",
+			cached:    []graphMemoryResult{},
+			graphList: []interface{}{},
+			want:      true,
+		},
+		{
+			name:      "nil cached",
+			cached:    nil,
+			graphList: []interface{}{},
+			want:      true,
+		},
+		{
+			name:      "invalid graphList entry",
+			cached:    []graphMemoryResult{{Graph: "flights"}},
+			graphList: []interface{}{int64(123)},
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := graphListMatches(tt.cached, tt.graphList)
+			if got != tt.want {
+				t.Errorf("graphListMatches() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGraphMemoryCacheBehavior(t *testing.T) {
+	e, err := NewRedisExporter("redis://localhost:6379", Options{
+		Namespace:               "test",
+		IsFalkorDB:              true,
+		InclFalkorDBGraphMemory: true,
+	})
+	if err != nil {
+		t.Fatalf("NewRedisExporter() err: %s", err)
+	}
+
+	// Pre-populate cache
+	cachedResults := []graphMemoryResult{
+		{
+			Graph:            "cached_graph",
+			TotalGraphSzMB:   500,
+			NodeAttrsByLabel: map[string]int64{},
+			EdgeAttrsByType:  map[string]int64{},
+		},
+	}
+	e.graphMemoryCache = cachedResults
+	e.graphMemoryCacheTime = time.Now()
+
+	// Emit from cache when graphList matches
+	graphList := []interface{}{[]byte("cached_graph")}
+	chM := make(chan prometheus.Metric, 50)
+	e.extractFalkorDBGraphMemoryMetrics(chM, nil, graphList)
+	close(chM)
+
+	found := false
+	for m := range chM {
+		if strings.Contains(m.Desc().String(), "falkordb_graph_memory_total_mb") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected cached metrics to be emitted")
+	}
+}
+
+func TestGraphMemoryCacheInvalidatedOnGraphListChange(t *testing.T) {
+	e, err := NewRedisExporter("redis://localhost:6379", Options{
+		Namespace:               "test",
+		IsFalkorDB:              true,
+		InclFalkorDBGraphMemory: true,
+	})
+	if err != nil {
+		t.Fatalf("NewRedisExporter() err: %s", err)
+	}
+
+	// Pre-populate cache with one graph
+	e.graphMemoryCache = []graphMemoryResult{
+		{Graph: "old_graph", TotalGraphSzMB: 100, NodeAttrsByLabel: map[string]int64{}, EdgeAttrsByType: map[string]int64{}},
+	}
+	e.graphMemoryCacheTime = time.Now()
+
+	// Verify cache is NOT served when graph list differs
+	differentGraphList := []interface{}{[]byte("new_graph")}
+	if graphListMatches(e.graphMemoryCache, differentGraphList) {
+		t.Error("graphListMatches should return false for different graph lists")
+	}
+
+	// Verify cache IS served when graph list matches
+	matchingGraphList := []interface{}{[]byte("old_graph")}
+	if !graphListMatches(e.graphMemoryCache, matchingGraphList) {
+		t.Error("graphListMatches should return true for matching graph lists")
+	}
+
+	// Test actual cache hit path
+	chM := make(chan prometheus.Metric, 50)
+	e.extractFalkorDBGraphMemoryMetrics(chM, nil, matchingGraphList)
+	close(chM)
+
+	found := false
+	for m := range chM {
+		if strings.Contains(m.Desc().String(), "falkordb_graph_memory_total_mb") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected cached metrics to be emitted when graph list matches")
 	}
 }
