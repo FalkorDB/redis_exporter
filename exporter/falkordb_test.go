@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gomodule/redigo/redis"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -64,7 +65,25 @@ func TestFalkorDBGraphMemory(t *testing.T) {
 		t.Skipf("TEST_FALKORDB_URI not set - skipping")
 	}
 
-	e, err := NewRedisExporter(os.Getenv("TEST_FALKORDB_URI"), Options{
+	addr := os.Getenv("TEST_FALKORDB_URI")
+
+	// Seed a minimal graph fixture to ensure deterministic metrics
+	c, err := redis.DialURL(addr)
+	if err != nil {
+		t.Fatalf("redis.DialURL() err: %s", err)
+	}
+	defer c.Close()
+
+	const testGraph = "_exporter_test_graph"
+	_, err = c.Do("GRAPH.QUERY", testGraph, "CREATE (:Node{val:1})-[:EDGE]->(:Node{val:2})")
+	if err != nil {
+		t.Skipf("GRAPH.QUERY not supported, skipping: %s", err)
+	}
+	t.Cleanup(func() {
+		c.Do("GRAPH.DELETE", testGraph)
+	})
+
+	e, err := NewRedisExporter(addr, Options{
 		Namespace:               "test",
 		IsFalkorDB:              true,
 		InclFalkorDBGraphMemory: true,
