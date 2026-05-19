@@ -46,6 +46,10 @@ type Exporter struct {
 	mux *http.ServeMux
 
 	buildInfo BuildInfo
+
+	// FalkorDB graph memory cache
+	graphMemoryCache     []graphMemoryResult
+	graphMemoryCacheTime time.Time
 }
 
 type Options struct {
@@ -100,6 +104,8 @@ type Options struct {
 	SkipCheckKeysForRoleMaster     bool
 	InclMetricsForEmptyDatabases   bool
 	IsFalkorDB                     bool
+	InclFalkorDBGraphMemory        bool
+	FalkorDBGraphMemoryCacheTTL    time.Duration
 	AppendInstanceRoleLabel        bool
 	DisableScrapeEndpoint          bool
 }
@@ -623,6 +629,14 @@ func NewRedisExporter(uri string, opts Options) (*Exporter, error) {
 			desc.lbls = append(desc.lbls, "instance_role") // append instance_role label to all metrics
 		}
 		e.metricDescriptions[k] = newMetricDescr(opts.Namespace, k, desc.txt, desc.lbls)
+	}
+
+	for k, desc := range falkorDBGraphMemoryMetrics {
+		lbls := desc.lbls
+		if e.options.AppendInstanceRoleLabel {
+			lbls = append(lbls, "instance_role")
+		}
+		e.metricDescriptions[k] = newMetricDescr(opts.Namespace, k, desc.txt, lbls)
 	}
 
 	if e.options.MetricsPath == "" {

@@ -244,6 +244,9 @@ P.S. Consider using `-append-instance-role-label` option to easily distinguish m
 | basic-auth-hash-password            | REDIS_EXPORTER_BASIC_AUTH_HASH_PASSWORD          | Bcrypt-hashed password for Basic Authentication with the redis exporter needs to be set together with basic-auth-username to be effective,  conflicts with `basic-auth-password`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | disable-scrape-endpoint             | REDIS_EXPORTER_DISABLE_SCRAPE_ENDPOINT           | Whether to disable the /scrape endpoint, defaults to false.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | include-metrics-for-empty-databases | REDIS_EXPORTER_INCL_METRICS_FOR_EMPTY_DATABASES  | Whether to emit db metrics (like db_keys) for empty databases.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| is-falkordb                         | REDIS_EXPORTER_IS_FALKORDB                       | Whether this is a FalkorDB instance. Enables collection of `falkordb_total_graph_count`, defaults to false.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| include-falkordb-graph-memory       | REDIS_EXPORTER_INCL_FALKORDB_GRAPH_MEMORY        | Whether to collect per-graph `GRAPH.MEMORY USAGE` metrics for FalkorDB (requires `--is-falkordb`), defaults to false.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| falkordb-graph-memory-cache-ttl     | REDIS_EXPORTER_FALKORDB_GRAPH_MEMORY_CACHE_TTL   | TTL for caching FalkorDB `GRAPH.MEMORY` results to avoid expensive calls on every scrape, defaults to `60s` (in Golang duration format).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | append-instance-role-label          | REDIS_EXPORTER_APPEND_INSTANCE_ROLE_LABEL        | Whether to append 'instance_role' label to redis metrics. It allows easy creation of dashboards/alerts with a selector for instance role (master/replica). NOTE: This increases the cardinality of Redis metrics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 Redis instance addresses can be tcp addresses: `redis://localhost:6379`, `redis.example.com:6379` or e.g. unix sockets: `unix:///tmp/redis.sock`.\
@@ -308,6 +311,36 @@ docker run -d --name redis_exporter --network host FalkorDB/redis_exporter
 
 [Here](contrib/k8s-redis-and-exporter-deployment.yaml) is an example Kubernetes deployment configuration for how to deploy the redis_exporter as a sidecar to a Redis instance.
 
+
+### FalkorDB
+
+[FalkorDB](https://www.falkordb.com/) is a graph database built on Redis.
+When `--is-falkordb=true` is set, the exporter calls `GRAPH.LIST` and exposes `falkordb_total_graph_count`.
+
+To also collect per-graph memory breakdown metrics, enable `--include-falkordb-graph-memory`.
+This calls `GRAPH.MEMORY USAGE <graph>` for each graph and exposes the following gauges:
+
+| Metric Name | Labels | Description |
+|-------------|--------|-------------|
+| `falkordb_graph_memory_total_mb` | `graph` | Total memory consumed by the graph in MB |
+| `falkordb_graph_label_matrices_mb` | `graph` | Memory used by label matrices in MB |
+| `falkordb_graph_relation_matrices_mb` | `graph` | Memory used by relation matrices in MB |
+| `falkordb_graph_node_block_mb` | `graph` | Memory used by node blocks in MB |
+| `falkordb_graph_node_attributes_mb` | `graph`, `label` | Memory used by node attributes per label in MB |
+| `falkordb_graph_unlabeled_node_attributes_mb` | `graph` | Memory used by unlabeled node attributes in MB |
+| `falkordb_graph_edge_block_mb` | `graph` | Memory used by edge blocks in MB |
+| `falkordb_graph_edge_attributes_mb` | `graph`, `type` | Memory used by edge attributes per relationship type in MB |
+| `falkordb_graph_indices_mb` | `graph` | Memory used by indices in MB |
+
+`GRAPH.MEMORY USAGE` can be expensive on large graphs. Results are cached for the duration specified by `--falkordb-graph-memory-cache-ttl` (default `60s`) to avoid calling it on every Prometheus scrape.
+
+Example:
+
+```sh
+./redis_exporter --is-falkordb --include-falkordb-graph-memory \
+  --falkordb-graph-memory-cache-ttl=60s \
+  --redis.addr=redis://localhost:6379
+```
 
 ### Tile38
 
