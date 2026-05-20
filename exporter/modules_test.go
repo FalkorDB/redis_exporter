@@ -9,8 +9,8 @@ import (
 )
 
 func TestModulesv80(t *testing.T) {
-	if os.Getenv("TEST_REDIS8_URI") == "" || os.Getenv("TEST_REDIS_URI") == "" {
-		t.Skipf("TEST_REDIS8_URI or TEST_REDIS_URI aren't set - skipping")
+	if os.Getenv("TEST_REDIS8_URI") == "" || os.Getenv("TEST_REDIS7_URI") == "" {
+		t.Skipf("TEST_REDIS8_URI or TEST_REDIS7_URI aren't set - skipping")
 	}
 
 	tsts := []struct {
@@ -20,8 +20,8 @@ func TestModulesv80(t *testing.T) {
 	}{
 		{addr: os.Getenv("TEST_REDIS8_URI"), inclModulesMetrics: true, wantModulesMetrics: true},
 		{addr: os.Getenv("TEST_REDIS8_URI"), inclModulesMetrics: false, wantModulesMetrics: false},
-		{addr: os.Getenv("TEST_REDIS_URI"), inclModulesMetrics: true, wantModulesMetrics: false},
-		{addr: os.Getenv("TEST_REDIS_URI"), inclModulesMetrics: false, wantModulesMetrics: false},
+		{addr: os.Getenv("TEST_REDIS7_URI"), inclModulesMetrics: true, wantModulesMetrics: false},
+		{addr: os.Getenv("TEST_REDIS7_URI"), inclModulesMetrics: false, wantModulesMetrics: false},
 	}
 
 	for _, tst := range tsts {
@@ -70,8 +70,8 @@ func TestModulesv80(t *testing.T) {
 }
 
 func TestModulesValkey(t *testing.T) {
-	if os.Getenv("TEST_VALKEY8_BUNDLE_URI") == "" || os.Getenv("TEST_REDIS_URI") == "" {
-		t.Skipf("TEST_VALKEY8_BUNDLE_URI or TEST_REDIS_URI aren't set - skipping")
+	if os.Getenv("TEST_VALKEY8_BUNDLE_URI") == "" || os.Getenv("TEST_REDIS7_URI") == "" {
+		t.Skipf("TEST_VALKEY8_BUNDLE_URI or TEST_REDIS7_URI aren't set - skipping")
 	}
 
 	tsts := []struct {
@@ -81,8 +81,8 @@ func TestModulesValkey(t *testing.T) {
 	}{
 		{addr: os.Getenv("TEST_VALKEY8_BUNDLE_URI"), inclModulesMetrics: true, wantModulesMetrics: true},
 		{addr: os.Getenv("TEST_VALKEY8_BUNDLE_URI"), inclModulesMetrics: false, wantModulesMetrics: false},
-		{addr: os.Getenv("TEST_REDIS_URI"), inclModulesMetrics: true, wantModulesMetrics: false},
-		{addr: os.Getenv("TEST_REDIS_URI"), inclModulesMetrics: false, wantModulesMetrics: false},
+		{addr: os.Getenv("TEST_REDIS7_URI"), inclModulesMetrics: true, wantModulesMetrics: false},
+		{addr: os.Getenv("TEST_REDIS7_URI"), inclModulesMetrics: false, wantModulesMetrics: false},
 	}
 
 	for _, tst := range tsts {
