@@ -21,6 +21,8 @@ type graphMemoryResult struct {
 	IndicesSzMB            int64
 }
 
+const defaultMaxFalkorDBGraphMemoryGraphs int64 = 10000
+
 func (e *Exporter) extractFalkorDBMetrics(ch chan<- prometheus.Metric, c redis.Conn) {
 	graphList, err := redis.Values(doRedisCmd(c, "GRAPH.LIST"))
 	if err != nil {
@@ -43,23 +45,36 @@ func (e *Exporter) extractFalkorDBMetrics(ch chan<- prometheus.Metric, c redis.C
 // (multi-target pattern), a fresh Exporter is created per request, so the cache
 // will not persist across scrapes in that mode.
 func (e *Exporter) extractFalkorDBGraphMemoryMetrics(ch chan<- prometheus.Metric, c redis.Conn, graphList []interface{}) {
-	ttl := e.options.FalkorDBGraphMemoryCacheTTL
-	if ttl == 0 {
-		ttl = 60 * time.Second
-	}
+	graphList = e.limitFalkorDBGraphMemoryGraphs(graphList)
 
-	// Use cached results if still valid and graph list hasn't changed
-	if e.graphMemoryCache != nil && time.Since(e.graphMemoryCacheTime) < ttl && graphListMatches(e.graphMemoryCache, graphList) {
+	ttl := e.options.FalkorDBGraphMemoryCacheTTL
+	cacheEnabled := ttl > 0
+
+	// Use cached results if still valid and graph list hasn't changed.
+	if cacheEnabled && e.graphMemoryCache != nil && time.Since(e.graphMemoryCacheTime) < ttl && graphListMatches(e.graphMemoryCache, graphList) {
 		e.emitGraphMemoryMetrics(ch, e.graphMemoryCache)
 		return
 	}
+	if !cacheEnabled {
+		e.graphMemoryCache = nil
+		e.graphMemoryCacheTime = time.Time{}
+	}
 
 	var results []graphMemoryResult
+	if cacheEnabled {
+		results = make([]graphMemoryResult, 0, len(graphList))
+	}
 
 	for _, g := range graphList {
 		graphName, err := redis.String(g, nil)
 		if err != nil {
 			log.Warnf("extractFalkorDBGraphMemoryMetrics() couldn't parse graph name: %s", err)
+			continue
+		}
+		if !cacheEnabled {
+			if err := e.fetchAndEmitGraphMemory(ch, c, graphName); err != nil {
+				log.Warnf("extractFalkorDBGraphMemoryMetrics() GRAPH.MEMORY USAGE %s err: %s", graphName, err)
+			}
 			continue
 		}
 
@@ -68,14 +83,30 @@ func (e *Exporter) extractFalkorDBGraphMemoryMetrics(ch chan<- prometheus.Metric
 			log.Warnf("extractFalkorDBGraphMemoryMetrics() GRAPH.MEMORY USAGE %s err: %s", graphName, err)
 			continue
 		}
-		results = append(results, result)
+
+		e.emitGraphMemoryMetric(ch, result)
+		if cacheEnabled {
+			results = append(results, result)
+		}
 	}
 
-	// Update cache
-	e.graphMemoryCache = results
-	e.graphMemoryCacheTime = time.Now()
+	if cacheEnabled {
+		e.graphMemoryCache = results
+		e.graphMemoryCacheTime = time.Now()
+	}
+}
 
-	e.emitGraphMemoryMetrics(ch, results)
+func (e *Exporter) limitFalkorDBGraphMemoryGraphs(graphList []interface{}) []interface{} {
+	maxGraphs := e.options.MaxFalkorDBGraphMemoryGraphs
+	if maxGraphs == 0 {
+		maxGraphs = defaultMaxFalkorDBGraphMemoryGraphs
+	}
+	if maxGraphs < 0 || int64(len(graphList)) <= maxGraphs {
+		return graphList
+	}
+
+	log.Warnf("extractFalkorDBGraphMemoryMetrics() limiting GRAPH.MEMORY scrape to %d of %d graphs", maxGraphs, len(graphList))
+	return graphList[:maxGraphs]
 }
 
 func (e *Exporter) fetchGraphMemory(c redis.Conn, graphName string) (graphMemoryResult, error) {
@@ -84,11 +115,7 @@ func (e *Exporter) fetchGraphMemory(c redis.Conn, graphName string) (graphMemory
 		return graphMemoryResult{}, err
 	}
 
-	result := graphMemoryResult{
-		Graph:            graphName,
-		NodeAttrsByLabel: make(map[string]int64),
-		EdgeAttrsByType:  make(map[string]int64),
-	}
+	result := graphMemoryResult{Graph: graphName}
 
 	for i := 0; i+1 < len(vals); i += 2 {
 		key, err := redis.String(vals[i], nil)
@@ -106,13 +133,17 @@ func (e *Exporter) fetchGraphMemory(c redis.Conn, graphName string) (graphMemory
 		case "amortized_node_block_sz_mb":
 			result.NodeBlockSzMB, err = redis.Int64(vals[i+1], nil)
 		case "amortized_node_attributes_by_label_sz_mb":
-			result.NodeAttrsByLabel = parseFlatMap(vals[i+1])
+			if !e.options.ExcludeFalkorDBGraphMemoryAttrs {
+				result.NodeAttrsByLabel = parseFlatMap(vals[i+1])
+			}
 		case "amortized_unlabeled_nodes_attributes_sz_mb":
 			result.UnlabeledNodeAttrsSzMB, err = redis.Int64(vals[i+1], nil)
 		case "amortized_edge_block_sz_mb":
 			result.EdgeBlockSzMB, err = redis.Int64(vals[i+1], nil)
 		case "amortized_edge_attributes_by_type_sz_mb":
-			result.EdgeAttrsByType = parseFlatMap(vals[i+1])
+			if !e.options.ExcludeFalkorDBGraphMemoryAttrs {
+				result.EdgeAttrsByType = parseFlatMap(vals[i+1])
+			}
 		case "indices_sz_mb":
 			result.IndicesSzMB, err = redis.Int64(vals[i+1], nil)
 		}
@@ -122,6 +153,86 @@ func (e *Exporter) fetchGraphMemory(c redis.Conn, graphName string) (graphMemory
 	}
 
 	return result, nil
+}
+
+func (e *Exporter) fetchAndEmitGraphMemory(ch chan<- prometheus.Metric, c redis.Conn, graphName string) error {
+	vals, err := redis.Values(doRedisCmd(c, "GRAPH.MEMORY", "USAGE", graphName))
+	if err != nil {
+		return err
+	}
+
+	var totalGraphSzMB int64
+	var labelMatricesSzMB int64
+	var relationMatricesSzMB int64
+	var nodeBlockSzMB int64
+	var unlabeledNodeAttrsSzMB int64
+	var edgeBlockSzMB int64
+	var indicesSzMB int64
+
+	for i := 0; i+1 < len(vals); i += 2 {
+		key, err := redis.String(vals[i], nil)
+		if err != nil {
+			continue
+		}
+
+		switch key {
+		case "total_graph_sz_mb":
+			totalGraphSzMB, err = redis.Int64(vals[i+1], nil)
+		case "label_matrices_sz_mb":
+			labelMatricesSzMB, err = redis.Int64(vals[i+1], nil)
+		case "relation_matrices_sz_mb":
+			relationMatricesSzMB, err = redis.Int64(vals[i+1], nil)
+		case "amortized_node_block_sz_mb":
+			nodeBlockSzMB, err = redis.Int64(vals[i+1], nil)
+		case "amortized_node_attributes_by_label_sz_mb":
+			if e.options.ExcludeFalkorDBGraphMemoryAttrs {
+				continue
+			}
+			e.emitFlatMapGraphMemoryMetrics(ch, "falkordb_graph_node_attributes_mb", graphName, vals[i+1])
+		case "amortized_unlabeled_nodes_attributes_sz_mb":
+			unlabeledNodeAttrsSzMB, err = redis.Int64(vals[i+1], nil)
+		case "amortized_edge_block_sz_mb":
+			edgeBlockSzMB, err = redis.Int64(vals[i+1], nil)
+		case "amortized_edge_attributes_by_type_sz_mb":
+			if e.options.ExcludeFalkorDBGraphMemoryAttrs {
+				continue
+			}
+			e.emitFlatMapGraphMemoryMetrics(ch, "falkordb_graph_edge_attributes_mb", graphName, vals[i+1])
+		case "indices_sz_mb":
+			indicesSzMB, err = redis.Int64(vals[i+1], nil)
+		}
+		if err != nil {
+			log.Debugf("fetchAndEmitGraphMemory() couldn't parse value for key %q in graph %q: %s", key, graphName, err)
+		}
+	}
+
+	e.registerConstMetricGauge(ch, "falkordb_graph_memory_total_mb", float64(totalGraphSzMB), graphName)
+	e.registerConstMetricGauge(ch, "falkordb_graph_label_matrices_mb", float64(labelMatricesSzMB), graphName)
+	e.registerConstMetricGauge(ch, "falkordb_graph_relation_matrices_mb", float64(relationMatricesSzMB), graphName)
+	e.registerConstMetricGauge(ch, "falkordb_graph_node_block_mb", float64(nodeBlockSzMB), graphName)
+	e.registerConstMetricGauge(ch, "falkordb_graph_unlabeled_node_attributes_mb", float64(unlabeledNodeAttrsSzMB), graphName)
+	e.registerConstMetricGauge(ch, "falkordb_graph_edge_block_mb", float64(edgeBlockSzMB), graphName)
+	e.registerConstMetricGauge(ch, "falkordb_graph_indices_mb", float64(indicesSzMB), graphName)
+
+	return nil
+}
+
+func (e *Exporter) emitFlatMapGraphMemoryMetrics(ch chan<- prometheus.Metric, metric string, graphName string, val interface{}) {
+	items, err := redis.Values(val, nil)
+	if err != nil {
+		return
+	}
+	for i := 0; i+1 < len(items); i += 2 {
+		name, err := redis.String(items[i], nil)
+		if err != nil {
+			continue
+		}
+		v, err := redis.Int64(items[i+1], nil)
+		if err != nil {
+			continue
+		}
+		e.registerConstMetricGauge(ch, metric, float64(v), graphName, name)
+	}
 }
 
 // graphListMatches returns true if the cached results correspond to the same set of graphs.
@@ -143,11 +254,11 @@ func graphListMatches(cached []graphMemoryResult, graphList []interface{}) bool 
 }
 
 func parseFlatMap(val interface{}) map[string]int64 {
-	m := make(map[string]int64)
 	items, err := redis.Values(val, nil)
 	if err != nil {
-		return m
+		return nil
 	}
+	m := make(map[string]int64, len(items)/2)
 	for i := 0; i+1 < len(items); i += 2 {
 		name, err := redis.String(items[i], nil)
 		if err != nil {
@@ -164,19 +275,27 @@ func parseFlatMap(val interface{}) map[string]int64 {
 
 func (e *Exporter) emitGraphMemoryMetrics(ch chan<- prometheus.Metric, results []graphMemoryResult) {
 	for _, r := range results {
-		e.registerConstMetricGauge(ch, "falkordb_graph_memory_total_mb", float64(r.TotalGraphSzMB), r.Graph)
-		e.registerConstMetricGauge(ch, "falkordb_graph_label_matrices_mb", float64(r.LabelMatricesSzMB), r.Graph)
-		e.registerConstMetricGauge(ch, "falkordb_graph_relation_matrices_mb", float64(r.RelationMatricesSzMB), r.Graph)
-		e.registerConstMetricGauge(ch, "falkordb_graph_node_block_mb", float64(r.NodeBlockSzMB), r.Graph)
-		e.registerConstMetricGauge(ch, "falkordb_graph_unlabeled_node_attributes_mb", float64(r.UnlabeledNodeAttrsSzMB), r.Graph)
-		e.registerConstMetricGauge(ch, "falkordb_graph_edge_block_mb", float64(r.EdgeBlockSzMB), r.Graph)
-		e.registerConstMetricGauge(ch, "falkordb_graph_indices_mb", float64(r.IndicesSzMB), r.Graph)
+		e.emitGraphMemoryMetric(ch, r)
+	}
+}
 
-		for label, val := range r.NodeAttrsByLabel {
-			e.registerConstMetricGauge(ch, "falkordb_graph_node_attributes_mb", float64(val), r.Graph, label)
-		}
-		for relType, val := range r.EdgeAttrsByType {
-			e.registerConstMetricGauge(ch, "falkordb_graph_edge_attributes_mb", float64(val), r.Graph, relType)
-		}
+func (e *Exporter) emitGraphMemoryMetric(ch chan<- prometheus.Metric, r graphMemoryResult) {
+	e.registerConstMetricGauge(ch, "falkordb_graph_memory_total_mb", float64(r.TotalGraphSzMB), r.Graph)
+	e.registerConstMetricGauge(ch, "falkordb_graph_label_matrices_mb", float64(r.LabelMatricesSzMB), r.Graph)
+	e.registerConstMetricGauge(ch, "falkordb_graph_relation_matrices_mb", float64(r.RelationMatricesSzMB), r.Graph)
+	e.registerConstMetricGauge(ch, "falkordb_graph_node_block_mb", float64(r.NodeBlockSzMB), r.Graph)
+	e.registerConstMetricGauge(ch, "falkordb_graph_unlabeled_node_attributes_mb", float64(r.UnlabeledNodeAttrsSzMB), r.Graph)
+	e.registerConstMetricGauge(ch, "falkordb_graph_edge_block_mb", float64(r.EdgeBlockSzMB), r.Graph)
+	e.registerConstMetricGauge(ch, "falkordb_graph_indices_mb", float64(r.IndicesSzMB), r.Graph)
+
+	if e.options.ExcludeFalkorDBGraphMemoryAttrs {
+		return
+	}
+
+	for label, val := range r.NodeAttrsByLabel {
+		e.registerConstMetricGauge(ch, "falkordb_graph_node_attributes_mb", float64(val), r.Graph, label)
+	}
+	for relType, val := range r.EdgeAttrsByType {
+		e.registerConstMetricGauge(ch, "falkordb_graph_edge_attributes_mb", float64(val), r.Graph, relType)
 	}
 }
