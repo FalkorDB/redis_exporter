@@ -39,6 +39,8 @@ var reSlave = regexp.MustCompile(`^slave\d+`)
 const (
 	InstanceRoleMaster = "master"
 	InstanceRoleSlave  = "slave"
+	// some Redis-compatible servers may report "replica" instead of "slave"
+	InstanceRoleReplica = "replica"
 )
 
 func extractVal(s string) (val float64, err error) {
@@ -199,12 +201,11 @@ func (e *Exporter) extractInfoMetrics(ch chan<- prometheus.Metric, info string, 
 
 	// numeric role gauge with stable, label-free series so that role changes
 	// (failovers) can be detected with changes(redis_instance_role[...])
-	if instanceRole == InstanceRoleMaster || instanceRole == InstanceRoleSlave {
-		roleVal := 0.0
-		if instanceRole == InstanceRoleMaster {
-			roleVal = 1.0
-		}
-		e.registerConstMetricGauge(ch, "instance_role", roleVal)
+	switch instanceRole {
+	case InstanceRoleMaster:
+		e.registerConstMetricGauge(ch, "instance_role", 1)
+	case InstanceRoleSlave, InstanceRoleReplica:
+		e.registerConstMetricGauge(ch, "instance_role", 0)
 	}
 
 	if instanceRole == InstanceRoleSlave {

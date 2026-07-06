@@ -552,6 +552,7 @@ func TestInstanceRoleMetric(t *testing.T) {
 	}{
 		{name: "master", info: "# Replication\nrole:master\n", wantPresent: true, wantVal: 1},
 		{name: "slave", info: "# Replication\nrole:slave\n", wantPresent: true, wantVal: 0},
+		{name: "replica", info: "# Replication\nrole:replica\n", wantPresent: true, wantVal: 0},
 		{name: "sentinel", info: "# Replication\nrole:sentinel\n", wantPresent: false},
 		{name: "role_missing", info: "# Server\nredis_version:7.4.0\n", wantPresent: false},
 	}
