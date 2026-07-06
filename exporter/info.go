@@ -37,7 +37,8 @@ slave1:ip=10.254.11.2,port=6379,state=online,offset=1751844222,lag=0
 var reSlave = regexp.MustCompile(`^slave\d+`)
 
 const (
-	InstanceRoleSlave = "slave"
+	InstanceRoleMaster = "master"
+	InstanceRoleSlave  = "slave"
 )
 
 func extractVal(s string) (val float64, err error) {
@@ -196,6 +197,16 @@ func (e *Exporter) extractInfoMetrics(ch chan<- prometheus.Metric, info string, 
 	e.createMetricDescription("instance_info", lbls)
 	e.registerConstMetricGauge(ch, "instance_info", 1, lblVals...)
 
+	// numeric role gauge with stable, label-free series so that role changes
+	// (failovers) can be detected with changes(redis_instance_role[...])
+	if instanceRole == InstanceRoleMaster || instanceRole == InstanceRoleSlave {
+		roleVal := 0.0
+		if instanceRole == InstanceRoleMaster {
+			roleVal = 1.0
+		}
+		e.registerConstMetricGauge(ch, "instance_role", roleVal)
+	}
+
 	if instanceRole == InstanceRoleSlave {
 		e.registerConstMetricGauge(ch, "slave_info", 1,
 			keyValues["master_host"],
@@ -329,6 +340,25 @@ func parseConnectedSlaveString(slaveName string, keyValues string) (offset float
 }
 
 func (e *Exporter) handleMetricsReplication(ch chan<- prometheus.Metric, masterHost string, masterPort string, fieldKey string, fieldValue string) bool {
+	// state of an ongoing failover, if any (Redis 6.2+), exported as a state-enum
+	// gauge: one series per known state, the current state is set to 1
+	if fieldKey == "master_failover_state" {
+		matched := false
+		for _, state := range []string{"no-failover", "waiting-for-sync", "failover-in-progress"} {
+			val := 0.0
+			if fieldValue == state {
+				val = 1.0
+				matched = true
+			}
+			e.registerConstMetricGauge(ch, "master_failover_state", val, state)
+		}
+		if !matched && fieldValue != "" {
+			// future/unknown state - export it as reported
+			e.registerConstMetricGauge(ch, "master_failover_state", 1, fieldValue)
+		}
+		return true
+	}
+
 	// only slaves have this field
 	if reMasterLinkStatus.MatchString(fieldKey) {
 		if fieldValue == "up" {
