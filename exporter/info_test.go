@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -517,6 +518,157 @@ func Test_parseMetricsLatencyStats(t *testing.T) {
 			}
 			if !reflect.DeepEqual(gotPercentileMap, tt.wantPercentileMap) {
 				t.Errorf("parseMetricsLatencyStats() gotPercentileMap = %v, want %v", gotPercentileMap, tt.wantPercentileMap)
+			}
+		})
+	}
+}
+
+func collectInfoMetrics(t *testing.T, info string) []prometheus.Metric {
+	t.Helper()
+	e, err := NewRedisExporter("unix:///tmp/doesnt.matter", Options{Namespace: "test"})
+	if err != nil {
+		t.Fatalf("NewRedisExporter() err: %s", err)
+	}
+
+	chM := make(chan prometheus.Metric)
+	go func() {
+		e.extractInfoMetrics(chM, info, 0)
+		close(chM)
+	}()
+
+	var metrics []prometheus.Metric
+	for m := range chM {
+		metrics = append(metrics, m)
+	}
+	return metrics
+}
+
+func TestInstanceRoleMetric(t *testing.T) {
+	tsts := []struct {
+		name        string
+		info        string
+		wantPresent bool
+		wantVal     float64
+	}{
+		{name: "master", info: "# Replication\nrole:master\n", wantPresent: true, wantVal: 1},
+		{name: "slave", info: "# Replication\nrole:slave\n", wantPresent: true, wantVal: 0},
+		{name: "replica", info: "# Replication\nrole:replica\n", wantPresent: true, wantVal: 0},
+		{name: "sentinel", info: "# Replication\nrole:sentinel\n", wantPresent: false},
+		{name: "role_missing", info: "# Server\nredis_version:7.4.0\n", wantPresent: false},
+	}
+
+	for _, tst := range tsts {
+		t.Run(tst.name, func(t *testing.T) {
+			found := false
+			var gotVal float64
+			for _, m := range collectInfoMetrics(t, tst.info) {
+				if !strings.Contains(m.Desc().String(), `fqName: "test_instance_role"`) {
+					continue
+				}
+				got := &dto.Metric{}
+				if err := m.Write(got); err != nil {
+					t.Fatalf("m.Write() err: %s", err)
+				}
+				found = true
+				gotVal = got.GetGauge().GetValue()
+			}
+
+			if found != tst.wantPresent {
+				t.Fatalf("metric presence mismatch, expected: %t, got: %t", tst.wantPresent, found)
+			}
+			if found && gotVal != tst.wantVal {
+				t.Errorf("value mismatch, expected: %f, got: %f", tst.wantVal, gotVal)
+			}
+		})
+	}
+}
+
+func TestInstanceRoleMetricExemptFromRoleLabel(t *testing.T) {
+	// even with AppendInstanceRoleLabel enabled, the instance_role gauge must stay
+	// label-free so its series doesn't churn on failover (changes() would break)
+	e, err := NewRedisExporter("unix:///tmp/doesnt.matter", Options{Namespace: "test", AppendInstanceRoleLabel: true})
+	if err != nil {
+		t.Fatalf("NewRedisExporter() err: %s", err)
+	}
+
+	chM := make(chan prometheus.Metric)
+	go func() {
+		e.extractInfoMetrics(chM, "# Replication\nrole:master\n", 0)
+		close(chM)
+	}()
+
+	found := false
+	for m := range chM {
+		if !strings.Contains(m.Desc().String(), `fqName: "test_instance_role"`) {
+			continue
+		}
+		found = true
+		got := &dto.Metric{}
+		if err := m.Write(got); err != nil {
+			t.Fatalf("m.Write() err: %s", err)
+		}
+		if len(got.GetLabel()) != 0 {
+			t.Errorf("instance_role gauge must have no labels, got: %v", got.GetLabel())
+		}
+	}
+	if !found {
+		t.Fatalf("instance_role metric not found")
+	}
+}
+
+func TestMasterFailoverStateMetric(t *testing.T) {
+	tsts := []struct {
+		name string
+		info string
+		want map[string]float64
+	}{
+		{
+			name: "no_failover",
+			info: "# Replication\nrole:master\nmaster_failover_state:no-failover\n",
+			want: map[string]float64{"no-failover": 1, "waiting-for-sync": 0, "failover-in-progress": 0},
+		},
+		{
+			name: "failover_in_progress",
+			info: "# Replication\nrole:master\nmaster_failover_state:failover-in-progress\n",
+			want: map[string]float64{"no-failover": 0, "waiting-for-sync": 0, "failover-in-progress": 1},
+		},
+		{
+			name: "waiting_for_sync",
+			info: "# Replication\nrole:master\nmaster_failover_state:waiting-for-sync\n",
+			want: map[string]float64{"no-failover": 0, "waiting-for-sync": 1, "failover-in-progress": 0},
+		},
+		{
+			name: "unknown_future_state",
+			info: "# Replication\nrole:master\nmaster_failover_state:some-new-state\n",
+			want: map[string]float64{"no-failover": 0, "waiting-for-sync": 0, "failover-in-progress": 0, "some-new-state": 1},
+		},
+		{
+			name: "field_absent",
+			info: "# Replication\nrole:master\n",
+			want: map[string]float64{},
+		},
+	}
+
+	for _, tst := range tsts {
+		t.Run(tst.name, func(t *testing.T) {
+			got := map[string]float64{}
+			for _, m := range collectInfoMetrics(t, tst.info) {
+				if !strings.Contains(m.Desc().String(), `fqName: "test_master_failover_state"`) {
+					continue
+				}
+				metric := &dto.Metric{}
+				if err := m.Write(metric); err != nil {
+					t.Fatalf("m.Write() err: %s", err)
+				}
+				for _, lbl := range metric.GetLabel() {
+					if lbl.GetName() == "state" {
+						got[lbl.GetValue()] = metric.GetGauge().GetValue()
+					}
+				}
+			}
+
+			if !reflect.DeepEqual(got, tst.want) {
+				t.Errorf("state series mismatch, expected: %v, got: %v", tst.want, got)
 			}
 		})
 	}
