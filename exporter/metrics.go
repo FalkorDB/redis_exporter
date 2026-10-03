@@ -32,6 +32,21 @@ func (e *Exporter) includeMetric(s string) bool {
 	return ok
 }
 
+// instanceRoleLabelExempt returns true for metrics that must NOT get the
+// instance_role label appended when AppendInstanceRoleLabel is enabled:
+// either they are collected before the role is known, or (instance_role)
+// their series must stay stable across role changes to keep
+// changes(redis_instance_role[...]) usable for failover detection.
+func instanceRoleLabelExempt(metricName string) bool {
+	switch metricName {
+	case "exporter_last_scrape_connect_time_seconds",
+		"exporter_last_scrape_ping_time_seconds",
+		"instance_role":
+		return true
+	}
+	return false
+}
+
 func (e *Exporter) parseAndRegisterConstMetric(ch chan<- prometheus.Metric, fieldKey, fieldValue string) {
 	orgMetricName := sanitizeMetricName(fieldKey)
 	metricName := orgMetricName
@@ -89,7 +104,7 @@ func (e *Exporter) registerConstMetric(ch chan<- prometheus.Metric, metric strin
 		desc = e.mustFindMetricDescription(metric)
 	}
 
-	if e.options.AppendInstanceRoleLabel && metric != "exporter_last_scrape_connect_time_seconds" && metric != "exporter_last_scrape_ping_time_seconds" {
+	if e.options.AppendInstanceRoleLabel && !instanceRoleLabelExempt(metric) {
 		labelValues = append(labelValues, e.instanceRole) // append instance_role label to all metrics
 	}
 	m, err := prometheus.NewConstMetric(desc, valType, val, labelValues...)
@@ -140,8 +155,8 @@ func (e *Exporter) createMetricDescription(metricName string, labels []string) *
 	if desc, found := e.metricDescriptions[metricName]; found {
 		return desc
 	}
-	if e.options.AppendInstanceRoleLabel && metricName != "exporter_last_scrape_connect_time_seconds" && metricName != "exporter_last_scrape_ping_time_seconds" {
-		labels = append(labels, "instance_role") // append instance_role label to all metrics (except 2 collected before instanceRole)
+	if e.options.AppendInstanceRoleLabel && !instanceRoleLabelExempt(metricName) {
+		labels = append(labels, "instance_role") // append instance_role label to all metrics (except the exempt ones)
 	}
 	d := newMetricDescr(e.options.Namespace, metricName, metricName+" metric", labels)
 	e.metricDescriptions[metricName] = d

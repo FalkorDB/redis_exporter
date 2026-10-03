@@ -1,6 +1,8 @@
 redis_exporter
 coverage.out
 coverage.txt
+cover.out
+cover_main.out
 dist/
 pkg/
 src/

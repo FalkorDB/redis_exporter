@@ -551,6 +551,9 @@ func NewRedisExporter(uri string, opts Options) (*Exporter, error) {
 		"latency_percentiles_usec":                           {txt: `A summary of latency percentile distribution per command`, lbls: []string{"cmd"}},
 		"latency_spike_duration_seconds":                     {txt: `Length of the last latency spike in seconds`, lbls: []string{"event_name"}},
 		"latency_spike_last":                                 {txt: `When the latency spike last occurred`, lbls: []string{"event_name"}},
+		"instance_role":                                      {txt: "Role of the scraped instance: 1 = master, 0 = slave/replica"},
+		"cluster_node_shard":                                 {txt: "Shard identity of the scraped cluster node, keyed by the shard's slot ranges (value is always 1)", lbls: []string{"shard_slots"}},
+		"master_failover_state":                              {txt: "State of an ongoing failover as reported by INFO replication (one series per state, current state = 1)", lbls: []string{"state"}},
 		"master_last_io_seconds_ago":                         {txt: "Master last io seconds ago", lbls: []string{"master_host", "master_port"}},
 		"master_link_up":                                     {txt: "Master link status on Redis slave", lbls: []string{"master_host", "master_port"}},
 		"master_sync_in_progress":                            {txt: "Master sync in progress", lbls: []string{"master_host", "master_port"}},
@@ -627,7 +630,7 @@ func NewRedisExporter(uri string, opts Options) (*Exporter, error) {
 		"aof_file_size_bytes":                                {txt: "AOF file size in bytes", lbls: []string{"filename"}},
 		"falkordb_total_graph_count":                         {txt: "Total number of graphs"},
 	} {
-		if e.options.AppendInstanceRoleLabel {
+		if e.options.AppendInstanceRoleLabel && !instanceRoleLabelExempt(k) {
 			desc.lbls = append(desc.lbls, "instance_role") // append instance_role label to all metrics
 		}
 		e.metricDescriptions[k] = newMetricDescr(opts.Namespace, k, desc.txt, desc.lbls)
@@ -857,6 +860,7 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 		} else {
 			log.Errorf("Redis CLUSTER INFO err: %s", err)
 		}
+		e.extractClusterNodeShardMetrics(ch, c)
 	} else if dbCount == 0 {
 		// in non-cluster mode, if dbCount is zero, then "CONFIG" failed to retrieve a valid
 		// number of databases, and we use the Redis config default which is 16

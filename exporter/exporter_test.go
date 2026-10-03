@@ -487,11 +487,11 @@ func TestRedisAppendInstanceRoleLabel(t *testing.T) {
 		ts := httptest.NewServer(e)
 
 		body := downloadURL(t, ts.URL+"/metrics")
-		if inc && !strings.Contains(body, "instance_role") {
+		if inc && !strings.Contains(body, "instance_role=\"") {
 			t.Errorf("want metrics to include instance_role label, have:\n%s", body)
 		} else if inc && strings.Contains(body, "instance_role=\"\"") {
 			t.Errorf("want metrics to include instance_role label and it should be set (found {instance_role=''}), have:\n%s", body)
-		} else if !inc && strings.Contains(body, "instance_role") {
+		} else if !inc && strings.Contains(body, "instance_role=\"") {
 			t.Errorf("did NOT want metrics to include instance_role label, have:\n%s", body)
 		}
 

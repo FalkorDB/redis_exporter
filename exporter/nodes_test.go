@@ -101,3 +101,76 @@ func TestParseClusterNodeString(t *testing.T) {
 		})
 	}
 }
+
+func TestParseShardSlotsFromClusterNodes(t *testing.T) {
+	tsts := []struct {
+		name         string
+		clusterNodes string
+		want         string
+		ok           bool
+	}{
+		{
+			name: "myself_is_master",
+			clusterNodes: "07c37dfeb235213a872192d90877d0cd55635b91 127.0.0.1:30004@31004 slave e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 0 1426238317239 4 connected\n" +
+				"67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1 127.0.0.1:30002@31002 master - 0 1426238316232 2 connected 5461-10922\n" +
+				"e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 myself,master - 0 0 1 connected 0-5460\n",
+			want: "0-5460",
+			ok:   true,
+		},
+		{
+			name: "myself_is_replica_resolves_master_slots",
+			clusterNodes: "07c37dfeb235213a872192d90877d0cd55635b91 127.0.0.1:30004@31004 myself,slave 67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1 0 1426238317239 4 connected\n" +
+				"67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1 127.0.0.1:30002@31002 master - 0 1426238316232 2 connected 5461-10922\n" +
+				"e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 master - 0 0 1 connected 0-5460\n",
+			want: "5461-10922",
+			ok:   true,
+		},
+		{
+			name: "multiple_ranges_sorted_numerically",
+			clusterNodes: "e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 myself,master - 0 0 1 connected 10923-16383 100 0-5460\n" +
+				"67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1 127.0.0.1:30002@31002 master - 0 1426238316232 2 connected 5461-10922\n",
+			want: "0-5460,100,10923-16383",
+			ok:   true,
+		},
+		{
+			name: "migrating_slot_entries_ignored",
+			clusterNodes: "e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 myself,master - 0 0 1 connected 0-5460 [5461->-67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1]\n" +
+				"67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1 127.0.0.1:30002@31002 master - 0 1426238316232 2 connected 5461-10922\n",
+			want: "0-5460",
+			ok:   true,
+		},
+		{
+			name:         "no_myself_line",
+			clusterNodes: "67ed2db8d677e59ec4a4cefb06858cf2a1a89fa1 127.0.0.1:30002@31002 master - 0 1426238316232 2 connected 5461-10922\n",
+			ok:           false,
+		},
+		{
+			name: "replica_with_missing_master_line",
+			clusterNodes: "07c37dfeb235213a872192d90877d0cd55635b91 127.0.0.1:30004@31004 myself,slave aaaabbbbccccddddeeeeffff0000111122223333 0 1426238317239 4 connected\n" +
+				"e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 master - 0 0 1 connected 0-5460\n",
+			ok: false,
+		},
+		{
+			name:         "master_without_slots",
+			clusterNodes: "e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 myself,master - 0 0 1 connected\n",
+			ok:           false,
+		},
+		{
+			name:         "empty_input",
+			clusterNodes: "",
+			ok:           false,
+		},
+	}
+
+	for _, tst := range tsts {
+		t.Run(tst.name, func(t *testing.T) {
+			got, ok := parseShardSlotsFromClusterNodes(tst.clusterNodes)
+			if ok != tst.ok {
+				t.Fatalf("ok mismatch, expected: %t, got: %t", tst.ok, ok)
+			}
+			if got != tst.want {
+				t.Errorf("shard slots not matching, expected: %q, got: %q", tst.want, got)
+			}
+		})
+	}
+}
