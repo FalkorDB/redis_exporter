@@ -1,6 +1,6 @@
 module github.com/FalkorDB/redis_exporter
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/gomodule/redigo v1.9.3
